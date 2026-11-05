@@ -14,15 +14,19 @@ interface NotifyInput {
 
 export const getIo = (req: Request): RealtimeServer => req.app.get('io') as RealtimeServer;
 
+// Notifications are a side effect: a failure here must not turn an already-saved action into an error response.
 export const notify = async (req: Request, input: NotifyInput): Promise<void> => {
   if (input.recipient.toString() === input.sender.toString()) return;
 
-  const notification = await Notification.create(input);
-  await notification.populate([
-    { path: 'sender', select: 'handle displayName avatar isVerified' },
-    { path: 'post', select: 'content images' },
-    { path: 'comment', select: 'content' },
-  ]);
-
-  getIo(req).to(userRoom(input.recipient.toString())).emit('new_notification', notification.toJSON());
+  try {
+    const notification = await Notification.create(input);
+    await notification.populate([
+      { path: 'sender', select: 'handle displayName avatar isVerified' },
+      { path: 'post', select: 'content images' },
+      { path: 'comment', select: 'content' },
+    ]);
+    getIo(req).to(userRoom(input.recipient.toString())).emit('new_notification', notification.toJSON());
+  } catch (error) {
+    console.error('Notification delivery failed:', error);
+  }
 };

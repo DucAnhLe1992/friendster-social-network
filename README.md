@@ -39,7 +39,7 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 - **Icons**: Lucide React
 
 ### Backend
-- **Runtime**: Node.js 20+
+- **Runtime**: Node.js 22+
 - **Framework**: Express.js with TypeScript
 - **Database**: MongoDB with Mongoose ODM
 - **Authentication**: JWT (access + refresh tokens)
@@ -55,78 +55,39 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 20+
-- Docker & Docker Compose (optional)
-- MongoDB (if running without Docker)
+- Node.js 22.12+
+- Docker with the Compose plugin (`docker compose`), optional
 
-### Option 1: Docker (Recommended)
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/friendster-modern.git
-cd friendster-modern
-
-# Start all services
-docker-compose up -d
-
-# Access the application
-# Frontend: http://localhost
-# API: http://localhost:5000
-# MongoDB: localhost:27017
-```
-
-### Option 2: Manual Setup
-
-#### 1. Install Dependencies
+### Option 1: Full stack in Docker
 
 ```bash
-# Install backend dependencies
-cd apps/api
-npm install
-
-# Install frontend dependencies
-cd ../web
-npm install
-```
-
-#### 2. Environment Variables
-
-```bash
-# Backend
-cd apps/api
 cp .env.example .env
-# Edit .env with your configuration
-
-# Frontend
-cd ../web
-cp .env.example .env
-# Edit .env with your configuration
+# Fill in JWT_ACCESS_SECRET and JWT_REFRESH_SECRET (two different values,
+# at least 32 characters each, e.g. `openssl rand -hex 48`)
+docker compose up -d --build
 ```
 
-#### 3. Start MongoDB
+The site is served at http://localhost. nginx forwards `/api`, `/socket.io`
+and `/uploads` to the API container, so no other ports are exposed.
+
+### Option 2: Local development
 
 ```bash
-# Using Docker
-docker run -d -p 27017:27017 --name friendster-mongo mongo:7-jammy
-
-# Or install MongoDB locally
+npm install                  # installs both apps (npm workspaces, one lockfile)
+cp apps/api/.env.example apps/api/.env
+cp apps/web/.env.example apps/web/.env
+npm run db:dev               # MongoDB on 127.0.0.1:27017 (or use your own)
+npm run dev                  # API on :5000, web on :5173
 ```
 
-#### 4. Run the Application
+### Checks (the same ones CI runs)
 
 ```bash
-# Terminal 1 - Backend
-cd apps/api
-npm run dev
-
-# Terminal 2 - Frontend
-cd apps/web
-npm run dev
+npm run typecheck
+npm run lint
+npm test                     # API integration tests (in-memory MongoDB)
+npm run build
 ```
-
-The application will be available at:
-- Frontend: http://localhost:5173
-- API: http://localhost:5000
 
 ## 📁 Project Structure
 
@@ -166,7 +127,12 @@ friendster-modern/
 - `POST /api/auth/register` - Register new user
 - `POST /api/auth/login` - Login user
 - `POST /api/auth/refresh` - Refresh access token
+- `POST /api/auth/logout` - Revoke the refresh token
 - `GET /api/auth/me` - Get current user
+
+### Health
+- `GET /health` - Process is up
+- `GET /ready` - Database is connected (503 otherwise)
 
 ### Posts
 - `GET /api/posts` - Get all posts
@@ -216,7 +182,8 @@ friendster-modern/
 
 ## 🔒 Security Features
 
-- JWT authentication with refresh tokens
+- JWT authentication with rotating, revocable refresh tokens (reuse detection)
+- Uploads checked by file signature, not just declared type
 - Password hashing with bcrypt (12 rounds)
 - Rate limiting on API endpoints
 - CORS protection
@@ -224,38 +191,23 @@ friendster-modern/
 - Input validation with Zod
 - MongoDB injection protection via Mongoose
 
-## 🧪 Testing
-
-```bash
-# Backend tests
-cd apps/api
-npm test
-
-# Frontend tests
-cd apps/web
-npm test
-```
-
 ## 🚀 Deployment
 
-### Docker Deployment
-
 ```bash
-# Build and start
-docker-compose up -d --build
-
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
+docker compose up -d --build   # build and start
+docker compose logs -f         # view logs
+docker compose down            # stop
 ```
+
+The CD workflow publishes images to Docker Hub after CI passes on `main`. It is
+off by default: set the repository variable `DOCKER_PUBLISH=true` and the
+secrets `DOCKER_USERNAME` / `DOCKER_PASSWORD` to enable it.
 
 ### Production Checklist
 
 - [ ] Change JWT secrets
 - [ ] Set up production MongoDB (MongoDB Atlas)
-- [ ] Configure Cloudinary for image uploads
+- [ ] Back up the `api_uploads` volume (uploaded images live there)
 - [ ] Set up SSL certificates
 - [ ] Configure environment variables
 - [ ] Set up monitoring (optional)
@@ -267,13 +219,15 @@ docker-compose down
 NODE_ENV=production
 PORT=5000
 MONGODB_URI=mongodb://...
-JWT_ACCESS_SECRET=your-secret
-JWT_REFRESH_SECRET=your-secret
-CORS_ORIGIN=https://yourdomain.com
+JWT_ACCESS_SECRET=<32+ random characters>
+JWT_REFRESH_SECRET=<32+ random characters, different>
+# Comma-separated list of allowed site addresses (required in production)
+CORS_ORIGIN=https://yourdomain.com,https://www.yourdomain.com
 ```
 
 ### Frontend (.env)
 ```env
+# Omit to use same-origin /api (Docker setup)
 VITE_API_URL=https://api.yourdomain.com/api
 ```
 

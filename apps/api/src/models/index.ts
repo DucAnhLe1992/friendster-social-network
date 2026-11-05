@@ -4,3 +4,4 @@ export { Comment } from './Comment';
 export { Notification } from './Notification';
 export { Message, Conversation } from './Message';
 export { Story } from './Story';
+export { RefreshSession } from './RefreshSession';

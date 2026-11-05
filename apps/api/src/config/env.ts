@@ -4,13 +4,23 @@ dotenv.config();
 
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
+const isProduction = NODE_ENV === 'production';
+
 const secret = (name: string, devFallback: string): string => {
   const value = process.env[name];
-  if (value) return value;
-  if (NODE_ENV === 'production') {
-    throw new Error(`${name} must be set in production`);
+  if (isProduction && (!value || value.length < 32)) {
+    throw new Error(`${name} must be set to a random string of at least 32 characters in production`);
   }
-  return devFallback;
+  return value || devFallback;
+};
+
+const corsOrigins = (): string[] => {
+  const value = process.env.CORS_ORIGIN;
+  if (!value && isProduction) throw new Error('CORS_ORIGIN must be set in production');
+  return (value || 'http://localhost:5173')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean);
 };
 
 export const env = {
@@ -24,10 +34,14 @@ export const env = {
   JWT_ACCESS_EXPIRY: process.env.JWT_ACCESS_EXPIRY || '15m',
   JWT_REFRESH_EXPIRY: process.env.JWT_REFRESH_EXPIRY || '7d',
 
-  CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  CORS_ORIGIN: corsOrigins(),
 
   RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
   RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '300', 10),
 };
+
+if (env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET && isProduction) {
+  throw new Error('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different');
+}
 
 export default env;

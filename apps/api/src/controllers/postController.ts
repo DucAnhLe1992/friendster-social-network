@@ -3,7 +3,7 @@ import { FilterQuery, Types } from 'mongoose';
 import { Post, User, Comment, Notification } from '../models';
 import { createPostSchema, updatePostSchema, paginationSchema, profileTabSchema } from '../utils/validation';
 import { AUTHOR_FIELDS, withLikeStatus } from '../utils/serializers';
-import { uploadedPath } from '../middleware/upload';
+import { isOwnedExistingUpload, removeUpload, uploadedPath } from '../middleware/upload';
 import { notify } from '../services/notifications';
 import { IApiResponse, IAuthRequest, IPost } from '../types';
 
@@ -73,6 +73,12 @@ export const uploadPostImages = async (req: IAuthRequest, res: Response): Promis
 
 export const createPost = async (req: IAuthRequest, res: Response): Promise<void> => {
   const data = createPostSchema.parse(req.body);
+  const userId = req.user!._id.toString();
+  const owned = await Promise.all(data.images.map((image) => isOwnedExistingUpload(image, 'posts', userId)));
+  if (!owned.every(Boolean)) {
+    res.status(400).json({ success: false, error: 'One or more images are invalid. Please upload them again.' });
+    return;
+  }
 
   const post = await Post.create({ ...data, author: req.user!._id });
   await post.populate('author', AUTHOR_FIELDS);
@@ -114,7 +120,11 @@ export const deletePost = async (req: IAuthRequest, res: Response): Promise<void
     return;
   }
 
-  await Promise.all([Comment.deleteMany({ post: post._id }), Notification.deleteMany({ post: post._id })]);
+  await Promise.all([
+    Comment.deleteMany({ post: post._id }),
+    Notification.deleteMany({ post: post._id }),
+    ...post.images.map((image) => removeUpload(image)),
+  ]);
   res.status(200).json({ success: true, message: 'Post deleted successfully' });
 };
 

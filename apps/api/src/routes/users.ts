@@ -13,18 +13,16 @@ import {
   getUserReplies,
 } from '../controllers/userController';
 import { authenticate, optionalAuth } from '../middleware/auth';
-import { imageUpload } from '../middleware/upload';
+import { singleImage } from '../middleware/upload';
 
 const router = Router();
-const avatarUpload = imageUpload('avatars');
-const coverUpload = imageUpload('covers');
 
 router.get('/search', optionalAuth, searchUsers);
 router.get('/suggestions', authenticate, getSuggestions);
 
 router.put('/profile', authenticate, updateProfile);
-router.post('/avatar', authenticate, avatarUpload.single('avatar'), uploadAvatar);
-router.post('/cover', authenticate, coverUpload.single('cover'), uploadCover);
+router.post('/avatar', authenticate, ...singleImage('avatars', 'avatar'), uploadAvatar);
+router.post('/cover', authenticate, ...singleImage('covers', 'cover'), uploadCover);
 
 router.get('/:handle', optionalAuth, getUserByHandle);
 router.get('/:handle/followers', optionalAuth, getFollowers);

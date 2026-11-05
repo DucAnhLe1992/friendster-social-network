@@ -11,7 +11,8 @@ const postSchema = new Schema<IPost>(
     },
     content: {
       type: String,
-      required: [true, 'Content is required'],
+      default: '',
+      trim: true,
       maxlength: [280, 'Post must be at most 280 characters'],
     },
     images: [{

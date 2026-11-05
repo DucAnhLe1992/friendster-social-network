@@ -82,8 +82,6 @@ const userSchema = new Schema<IUser>(
 );
 
 // Indexes
-userSchema.index({ handle: 1 });
-userSchema.index({ email: 1 });
 userSchema.index({ displayName: 'text', handle: 'text' });
 
 // Virtual fields

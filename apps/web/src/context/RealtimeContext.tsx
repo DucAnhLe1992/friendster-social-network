@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import { io, type Socket } from 'socket.io-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { SERVER_ORIGIN } from '@/lib/api';
+import { apiClient, SERVER_ORIGIN } from '@/lib/api';
 import { useAuthStore } from '@/store/authStore';
 import type { Message, Notification } from '@/types';
 
@@ -61,7 +61,17 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
       queryClient.invalidateQueries({ queryKey: ['unread', 'messages'] });
     });
 
-    setSocket(next);
+    next.on('connect', () => setSocket(next));
+    next.on('disconnect', (reason) => {
+      // The server drops sockets whose token expired; any authenticated request refreshes it and reconnects us.
+      if (reason !== 'io server disconnect') return;
+      apiClient
+        .getUnreadNotifications()
+        .catch(() => undefined)
+        .finally(() => {
+          if (useAuthStore.getState().tokens?.accessToken === accessToken) next.connect();
+        });
+    });
     return () => {
       next.disconnect();
       setSocket(null);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
@@ -35,14 +35,18 @@ const EditProfileDialog = ({ open, onOpenChange, user }: EditProfileDialogProps)
   const avatarInput = useRef<HTMLInputElement>(null);
   const coverInput = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    setForm({ displayName: user.displayName, bio: user.bio ?? '', location: user.location ?? '', website: user.website ?? '' });
-    setAvatarFile(null);
-    setCoverFile(null);
-  }, [open, user]);
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setForm({ displayName: user.displayName, bio: user.bio ?? '', location: user.location ?? '', website: user.website ?? '' });
+      setAvatarFile(null);
+      setCoverFile(null);
+    }
+  }
 
-  const [avatarPreview, coverPreview] = useObjectUrls(avatarFile, coverFile);
+  const avatarPreview = useObjectUrl(avatarFile);
+  const coverPreview = useObjectUrl(coverFile);
 
   const pick = (setter: (f: File) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -170,18 +174,12 @@ const EditProfileDialog = ({ open, onOpenChange, user }: EditProfileDialogProps)
   );
 };
 
-const useObjectUrls = (...files: (File | null)[]) => {
-  const [urls, setUrls] = useState<(string | undefined)[]>([]);
-  const key = files.map((f) => (f ? `${f.name}:${f.size}:${f.lastModified}` : '')).join('|');
-
-  useEffect(() => {
-    const next = files.map((f) => (f ? URL.createObjectURL(f) : undefined));
-    setUrls(next);
-    return () => next.forEach((u) => u && URL.revokeObjectURL(u));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  return urls;
+const useObjectUrl = (file: File | null) => {
+  const url = useMemo(() => (file ? URL.createObjectURL(file) : undefined), [file]);
+  useEffect(() => () => {
+    if (url) URL.revokeObjectURL(url);
+  }, [url]);
+  return url;
 };
 
 export default EditProfileDialog;

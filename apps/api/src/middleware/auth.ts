@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from 'express';
+import { Response, NextFunction } from 'express';
 import { verifyAccessToken } from '../utils/jwt';
 import { User } from '../models';
 import { IAuthRequest } from '../types';

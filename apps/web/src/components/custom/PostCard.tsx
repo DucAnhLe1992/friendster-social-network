@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Heart, MessageCircle, Link2, MoreHorizontal, Trash2, Pencil, BadgeCheck } from 'lucide-react';
 import { toast } from 'sonner';
@@ -41,12 +41,14 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [viewer, setViewer] = useState<string | null>(null);
 
-  useEffect(() => {
+  const [prevPost, setPrevPost] = useState(post);
+  if (post !== prevPost) {
+    setPrevPost(post);
     setContent(post.content);
     setIsEdited(post.isEdited);
     setIsLiked(post.isLiked);
     setLikeCount(post.likeCount);
-  }, [post]);
+  }
 
   const isAuthor = userId === post.author._id;
   const openPost = () => !detailed && navigate(`/post/${post._id}`);
@@ -111,6 +113,11 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
     <>
     <article
       onClick={openPost}
+      tabIndex={detailed ? undefined : 0}
+      aria-label={detailed ? undefined : `Post by ${post.author.displayName}`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && e.target === e.currentTarget) openPost();
+      }}
       className={`px-4 sm:px-6 py-4 border-b border-border transition-colors animate-fade-in ${
         detailed ? '' : 'cursor-pointer hover:bg-secondary/30'
       }`}

@@ -95,11 +95,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
     isTyping.current = false;
   };
 
-  useEffect(() => {
-    setOtherTyping(false);
-    setDraft('');
-    return stopTyping;
-  }, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => stopTyping, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onDraftChange = (value: string) => {
     setDraft(value);
@@ -116,7 +112,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
     if (!list[0] || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const res = await apiClient.getMessages(conversationId, list[0].createdAt);
+      const res = await apiClient.getMessages(conversationId, list[0]._id);
       if (scroller.current) keepOffset.current = scroller.current.scrollHeight - scroller.current.scrollTop;
       queryClient.setQueryData<Message[]>(messagesKey, (old = []) => [...res.messages, ...old]);
       setHasMore(Boolean(res.meta.hasMore));

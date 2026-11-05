@@ -21,9 +21,11 @@ const NewMessageDialog = ({ open, onOpenChange }: { open: boolean; onOpenChange:
     return () => clearTimeout(id);
   }, [input]);
 
-  useEffect(() => {
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (!open) setInput('');
-  }, [open]);
+  }
 
   const results = useQuery({ queryKey: ['search', 'users', q], queryFn: () => apiClient.searchUsers(q), enabled: open && q.length > 0 });
   const users = (results.data ?? []).filter((u) => u._id !== myId);

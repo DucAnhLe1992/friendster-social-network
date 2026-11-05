@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -24,7 +24,11 @@ const FollowButton = ({ handle, userId, isFollowing: initial = false, onChange, 
   const [busy, setBusy] = useState(false);
   const [hover, setHover] = useState(false);
 
-  useEffect(() => setFollowing(initial), [initial]);
+  const [prevInitial, setPrevInitial] = useState(initial);
+  if (initial !== prevInitial) {
+    setPrevInitial(initial);
+    setFollowing(initial);
+  }
 
   if (!me || me._id === userId) return null;
 

@@ -17,7 +17,11 @@ const Explore = () => {
   const [input, setInput] = useState(q);
   const [tab, setTab] = useState<ResultTab>('posts');
 
-  useEffect(() => setInput(q), [q]);
+  const [prevQ, setPrevQ] = useState(q);
+  if (q !== prevQ) {
+    setPrevQ(q);
+    setInput(q);
+  }
 
   useEffect(() => {
     const id = setTimeout(() => {

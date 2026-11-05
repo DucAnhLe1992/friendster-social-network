@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { Fragment, lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
@@ -11,20 +11,27 @@ import { RealtimeProvider } from '@/context/RealtimeContext';
 import MainLayout from '@/layouts/MainLayout';
 import AuthLayout from '@/layouts/AuthLayout';
 
-import Home from '@/pages/Home';
-import Explore from '@/pages/Explore';
-import Notifications from '@/pages/Notifications';
-import Messages from '@/pages/Messages';
-import Profile from '@/pages/Profile';
-import PostDetail from '@/pages/PostDetail';
-import Login from '@/pages/Login';
-import Register from '@/pages/Register';
-import NotFound from '@/pages/NotFound';
+const Home = lazy(() => import('@/pages/Home'));
+const Explore = lazy(() => import('@/pages/Explore'));
+const Notifications = lazy(() => import('@/pages/Notifications'));
+const Messages = lazy(() => import('@/pages/Messages'));
+const Profile = lazy(() => import('@/pages/Profile'));
+const PostDetail = lazy(() => import('@/pages/PostDetail'));
+const Login = lazy(() => import('@/pages/Login'));
+const Register = lazy(() => import('@/pages/Register'));
+const NotFound = lazy(() => import('@/pages/NotFound'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: { retry: 1, refetchOnWindowFocus: false, staleTime: 15_000 },
   },
+});
+
+// Wipe every cached response the moment the signed-in account changes, before the next account renders.
+useAuthStore.subscribe((state, prev) => {
+  if (state.user?._id === prev.user?._id) return;
+  queryClient.cancelQueries();
+  queryClient.clear();
 });
 
 const FullScreenSpinner = () => (
@@ -69,7 +76,27 @@ const AuthInitializer = ({ children }: { children: ReactNode }) => {
   return <>{children}</>;
 };
 
-const protectedPage = (page: ReactNode) => <ProtectedRoute>{page}</ProtectedRoute>;
+const PageFallback = () => (
+  <div className="flex justify-center py-16">
+    <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent" />
+  </div>
+);
+
+const protectedPage = (page: ReactNode) => (
+  <ProtectedRoute>
+    <Suspense fallback={<PageFallback />}>{page}</Suspense>
+  </ProtectedRoute>
+);
+const publicPage = (page: ReactNode) => (
+  <PublicRoute>
+    <Suspense fallback={<PageFallback />}>{page}</Suspense>
+  </PublicRoute>
+);
+
+const AccountScope = ({ children }: { children: ReactNode }) => {
+  const userId = useAuthStore((s) => s.user?._id ?? 'guest');
+  return <Fragment key={userId}>{children}</Fragment>;
+};
 
 function App() {
   return (
@@ -77,23 +104,25 @@ function App() {
       <BrowserRouter>
         <AuthInitializer>
           <RealtimeProvider>
-            <Routes>
-              <Route element={<AuthLayout />}>
-                <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
-                <Route path="/register" element={<PublicRoute><Register /></PublicRoute>} />
-              </Route>
+            <AccountScope>
+              <Routes>
+                <Route element={<AuthLayout />}>
+                  <Route path="/login" element={publicPage(<Login />)} />
+                  <Route path="/register" element={publicPage(<Register />)} />
+                </Route>
 
-              <Route element={<MainLayout />}>
-                <Route path="/" element={protectedPage(<Home />)} />
-                <Route path="/explore" element={protectedPage(<Explore />)} />
-                <Route path="/notifications" element={protectedPage(<Notifications />)} />
-                <Route path="/messages" element={protectedPage(<Messages />)} />
-                <Route path="/messages/:id" element={protectedPage(<Messages />)} />
-                <Route path="/profile/:handle" element={protectedPage(<Profile />)} />
-                <Route path="/post/:id" element={protectedPage(<PostDetail />)} />
-                <Route path="*" element={<NotFound />} />
-              </Route>
-            </Routes>
+                <Route element={<MainLayout />}>
+                  <Route path="/" element={protectedPage(<Home />)} />
+                  <Route path="/explore" element={protectedPage(<Explore />)} />
+                  <Route path="/notifications" element={protectedPage(<Notifications />)} />
+                  <Route path="/messages" element={protectedPage(<Messages />)} />
+                  <Route path="/messages/:id" element={protectedPage(<Messages />)} />
+                  <Route path="/profile/:handle" element={protectedPage(<Profile />)} />
+                  <Route path="/post/:id" element={protectedPage(<PostDetail />)} />
+                  <Route path="*" element={<Suspense fallback={<PageFallback />}><NotFound /></Suspense>} />
+                </Route>
+              </Routes>
+            </AccountScope>
           </RealtimeProvider>
         </AuthInitializer>
       </BrowserRouter>

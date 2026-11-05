@@ -15,7 +15,8 @@ import type {
   User,
 } from '@/types';
 
-export const API_BASE_URL: string = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+export const API_BASE_URL: string =
+  import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000/api' : '/api');
 export const SERVER_ORIGIN = new URL(API_BASE_URL, window.location.origin).origin;
 
 export const mediaUrl = (path?: string | null): string | undefined => {
@@ -33,6 +34,13 @@ api.interceptors.request.use((config) => {
 
 let refreshing: Promise<Tokens | null> | null = null;
 
+// Another tab may have rotated the refresh token already; its result is in shared storage.
+const tokensFromOtherTab = async (usedRefreshToken: string): Promise<Tokens | null> => {
+  await useAuthStore.persist.rehydrate();
+  const stored = useAuthStore.getState().tokens;
+  return stored?.refreshToken && stored.refreshToken !== usedRefreshToken ? stored : null;
+};
+
 const refreshTokens = (): Promise<Tokens | null> => {
   const refreshToken = useAuthStore.getState().tokens?.refreshToken;
   if (!refreshToken) return Promise.resolve(null);
@@ -40,20 +48,22 @@ const refreshTokens = (): Promise<Tokens | null> => {
   refreshing ??= axios
     .post<ApiResponse<{ tokens: Tokens }>>(`${API_BASE_URL}/auth/refresh`, { refreshToken })
     .then((res) => res.data.data?.tokens ?? null)
-    .catch(() => null)
+    .catch(() => tokensFromOtherTab(refreshToken))
     .finally(() => {
       refreshing = null;
     });
   return refreshing;
 };
 
+const NO_REFRESH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout'];
+
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError<ApiResponse>) => {
     const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
-    const isAuthCall = original?.url?.startsWith('/auth/');
+    const skipRefresh = NO_REFRESH_PATHS.some((path) => original?.url?.startsWith(path));
 
-    if (error.response?.status === 401 && original && !original._retry && !isAuthCall) {
+    if (error.response?.status === 401 && original && !original._retry && !skipRefresh) {
       original._retry = true;
       const tokens = await refreshTokens();
       if (tokens) {
@@ -66,6 +76,12 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
+
+export const signOut = async (): Promise<void> => {
+  const refreshToken = useAuthStore.getState().tokens?.refreshToken;
+  useAuthStore.getState().logout();
+  if (refreshToken) await api.post('/auth/logout', { refreshToken }).catch(() => undefined);
+};
 
 export const getErrorMessage = (error: unknown, fallback = 'Something went wrong. Please try again.'): string => {
   if (axios.isAxiosError(error)) {
