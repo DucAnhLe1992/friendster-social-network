@@ -18,10 +18,10 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 - 🔔 **Notifications** - Real-time notifications for likes, comments, and follows
 - 👥 **Follow System** - Follow/unfollow users with personalized feed
 
-### Advanced Features (Senior Level)
+### Additional Features
 - ⚡ **Real-time** - Socket.io for live notifications and messaging
 - 🐳 **Dockerized** - Complete containerization with Docker Compose
-- 🔄 **CI/CD Pipeline** - Automated testing and deployment with GitHub Actions
+- 🔄 **CI Pipeline** - GitHub Actions runs type checks, lint, API integration tests, builds, and a Docker stack smoke test; image publishing is opt-in
 - 📱 **Responsive Design** - Mobile-first approach with dark theme
 - 🎨 **Modern UI** - Glassmorphism effects with smooth animations
 
@@ -50,7 +50,7 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 ### DevOps
 - **Containerization**: Docker + Docker Compose
 - **CI/CD**: GitHub Actions
-- **Testing**: Vitest (frontend), Jest (backend)
+- **Testing**: Vitest + Supertest API integration tests (no frontend test suite yet)
 
 ## 🚀 Quick Start
 

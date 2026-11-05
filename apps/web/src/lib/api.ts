@@ -26,61 +26,88 @@ export const mediaUrl = (path?: string | null): string | undefined => {
 
 export const api = axios.create({ baseURL: API_BASE_URL, timeout: 15000 });
 
-api.interceptors.request.use((config) => {
-  const tokens = useAuthStore.getState().tokens;
+type AuthedConfig = InternalAxiosRequestConfig & { _retry?: boolean; _authGeneration?: number };
+
+api.interceptors.request.use((config: AuthedConfig) => {
+  const { tokens, generation } = useAuthStore.getState();
+  config._authGeneration = generation;
   if (tokens?.accessToken) config.headers.Authorization = `Bearer ${tokens.accessToken}`;
   return config;
 });
 
-let refreshing: Promise<Tokens | null> | null = null;
+class StaleSessionError extends Error {
+  constructor() {
+    super('The session that started this request has ended');
+  }
+}
 
-// Another tab may have rotated the refresh token already; its result is in shared storage.
-const tokensFromOtherTab = async (usedRefreshToken: string): Promise<Tokens | null> => {
-  await useAuthStore.persist.rehydrate();
-  const stored = useAuthStore.getState().tokens;
-  return stored?.refreshToken && stored.refreshToken !== usedRefreshToken ? stored : null;
+const isCurrent = (generation: number | undefined) => generation === useAuthStore.getState().generation;
+
+// Another tab of the same account may have rotated the refresh token already; its result is in shared storage.
+const tokensFromOtherTab = async (usedRefreshToken: string, userId: string | undefined): Promise<Tokens | null> => {
+  const stored = await useAuthStore.persist.getOptions().storage?.getItem('auth-storage');
+  const state = stored?.state as { user?: { _id?: string } | null; tokens?: Tokens | null } | undefined;
+  const tokens = state?.tokens;
+  if (!userId || state?.user?._id !== userId || !tokens?.refreshToken) return null;
+  return tokens.refreshToken !== usedRefreshToken ? tokens : null;
 };
 
-const refreshTokens = (): Promise<Tokens | null> => {
-  const refreshToken = useAuthStore.getState().tokens?.refreshToken;
+// One in-flight refresh per sign-in generation, so a refresh started by one account is never reused by the next.
+let refreshing: { generation: number; promise: Promise<Tokens | null> } | null = null;
+
+const refreshTokens = (generation: number): Promise<Tokens | null> => {
+  if (refreshing?.generation === generation) return refreshing.promise;
+
+  const { tokens, user } = useAuthStore.getState();
+  const refreshToken = tokens?.refreshToken;
   if (!refreshToken) return Promise.resolve(null);
 
-  refreshing ??= axios
+  const promise = axios
     .post<ApiResponse<{ tokens: Tokens }>>(`${API_BASE_URL}/auth/refresh`, { refreshToken })
     .then((res) => res.data.data?.tokens ?? null)
-    .catch(() => tokensFromOtherTab(refreshToken))
+    .catch(() => tokensFromOtherTab(refreshToken, user?._id))
+    .then((next) => {
+      if (!isCurrent(generation)) throw new StaleSessionError();
+      if (next) useAuthStore.getState().setTokensFor(generation, next);
+      return next;
+    })
     .finally(() => {
-      refreshing = null;
+      if (refreshing?.promise === promise) refreshing = null;
     });
-  return refreshing;
+  refreshing = { generation, promise };
+  return promise;
 };
 
 const NO_REFRESH_PATHS = ['/auth/login', '/auth/register', '/auth/refresh', '/auth/logout'];
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (!isCurrent((response.config as AuthedConfig)._authGeneration)) return Promise.reject(new StaleSessionError());
+    return response;
+  },
   async (error: AxiosError<ApiResponse>) => {
-    const original = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
-    const skipRefresh = NO_REFRESH_PATHS.some((path) => original?.url?.startsWith(path));
+    const original = error.config as AuthedConfig | undefined;
+    const generation = original?._authGeneration;
+    if (!isCurrent(generation)) return Promise.reject(new StaleSessionError());
 
-    if (error.response?.status === 401 && original && !original._retry && !skipRefresh) {
+    const skipRefresh = NO_REFRESH_PATHS.some((path) => original?.url?.startsWith(path));
+    if (error.response?.status === 401 && original && generation !== undefined && !original._retry && !skipRefresh) {
       original._retry = true;
-      const tokens = await refreshTokens();
-      if (tokens) {
-        useAuthStore.getState().setTokens(tokens);
-        original.headers.Authorization = `Bearer ${tokens.accessToken}`;
-        return api(original);
-      }
-      useAuthStore.getState().logout();
+      const tokens = await refreshTokens(generation);
+      if (tokens) return api(original);
+      useAuthStore.getState().logoutFor(generation);
     }
     return Promise.reject(error);
   }
 );
 
+export const isStaleSessionError = (error: unknown): boolean => error instanceof StaleSessionError;
+
 export const signOut = async (): Promise<void> => {
   const refreshToken = useAuthStore.getState().tokens?.refreshToken;
   useAuthStore.getState().logout();
-  if (refreshToken) await api.post('/auth/logout', { refreshToken }).catch(() => undefined);
+  // The server revokes this token's whole session family, including any successor a pending refresh just issued.
+  if (refreshToken) await axios.post(`${API_BASE_URL}/auth/logout`, { refreshToken }).catch(() => undefined);
 };
 
 export const getErrorMessage = (error: unknown, fallback = 'Something went wrong. Please try again.'): string => {
@@ -205,7 +232,7 @@ export const apiClient = {
   },
   sendMessage: (id: string, content: string) =>
     unwrap(api.post<ApiResponse<{ message: Message }>>(`/conversations/${id}/messages`, { content })).then((d) => d.message),
-  markConversationRead: (id: string) => api.post(`/conversations/${id}/read`),
+  markConversationRead: (id: string, upTo: string) => api.post(`/conversations/${id}/read`, { upTo }),
 };
 
 export default apiClient;

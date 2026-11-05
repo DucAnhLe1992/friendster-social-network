@@ -32,6 +32,7 @@ const messageSchema = new Schema<IMessage>(
 // Indexes
 messageSchema.index({ conversation: 1, createdAt: -1, _id: -1 });
 messageSchema.index({ sender: 1 });
+messageSchema.index({ conversation: 1, isRead: 1, sender: 1 });
 
 export const Message = mongoose.model<IMessage>('Message', messageSchema);
 
@@ -49,11 +50,6 @@ const conversationSchema = new Schema<IConversation>(
       type: Schema.Types.ObjectId,
       ref: 'Message',
       default: null,
-    },
-    unreadCount: {
-      type: Map,
-      of: Number,
-      default: new Map(),
     },
   },
   {

@@ -3,7 +3,8 @@ import { FilterQuery, Types } from 'mongoose';
 import { Post, User, Comment, Notification } from '../models';
 import { createPostSchema, updatePostSchema, paginationSchema, profileTabSchema } from '../utils/validation';
 import { AUTHOR_FIELDS, withLikeStatus } from '../utils/serializers';
-import { isOwnedExistingUpload, removeUpload, uploadedPath } from '../middleware/upload';
+import { uploadedPath } from '../middleware/upload';
+import { claimForPost, deletePostMedia, recordUploads, releaseClaims } from '../services/media';
 import { notify } from '../services/notifications';
 import { IApiResponse, IAuthRequest, IPost } from '../types';
 
@@ -65,22 +66,26 @@ export const uploadPostImages = async (req: IAuthRequest, res: Response): Promis
     res.status(400).json({ success: false, error: 'No images uploaded' });
     return;
   }
-  res.status(201).json({
-    success: true,
-    data: { images: files.map((file) => uploadedPath('posts', file.filename)) },
-  });
+  const images = files.map((file) => uploadedPath('posts', file.filename));
+  await recordUploads(req.user!._id, images);
+  res.status(201).json({ success: true, data: { images } });
 };
 
 export const createPost = async (req: IAuthRequest, res: Response): Promise<void> => {
   const data = createPostSchema.parse(req.body);
-  const userId = req.user!._id.toString();
-  const owned = await Promise.all(data.images.map((image) => isOwnedExistingUpload(image, 'posts', userId)));
-  if (!owned.every(Boolean)) {
+  const postId = new Types.ObjectId();
+  if (!(await claimForPost(postId, req.user!._id, data.images))) {
     res.status(400).json({ success: false, error: 'One or more images are invalid. Please upload them again.' });
     return;
   }
 
-  const post = await Post.create({ ...data, author: req.user!._id });
+  let post;
+  try {
+    post = await Post.create({ ...data, _id: postId, author: req.user!._id });
+  } catch (error) {
+    await releaseClaims(postId);
+    throw error;
+  }
   await post.populate('author', AUTHOR_FIELDS);
 
   res.status(201).json({
@@ -123,7 +128,7 @@ export const deletePost = async (req: IAuthRequest, res: Response): Promise<void
   await Promise.all([
     Comment.deleteMany({ post: post._id }),
     Notification.deleteMany({ post: post._id }),
-    ...post.images.map((image) => removeUpload(image)),
+    deletePostMedia(post._id, post.images),
   ]);
   res.status(200).json({ success: true, message: 'Post deleted successfully' });
 };

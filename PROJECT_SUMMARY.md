@@ -96,7 +96,7 @@ friendster-modern/
 - **Helmet** & **CORS** for security
 - **Rate limiting** for API protection
 
-### DevOps (Senior Level Touches)
+### DevOps
 - **Docker** containerization for all services
 - **Docker Compose** for local development
 - **GitHub Actions** CI/CD pipeline
@@ -186,7 +186,7 @@ npm run dev
 ```
 Access at: http://localhost:5173
 
-## 📈 Senior Level Features
+## 📈 Notable Engineering Details
 
 1. **Type Safety**: Full TypeScript coverage with shared types
 2. **Security**: JWT tokens, rate limiting, input validation, helmet

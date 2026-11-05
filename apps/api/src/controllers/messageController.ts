@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { Types } from 'mongoose';
 import { Conversation, Message, User } from '../models';
-import { createMessageSchema, messagesQuerySchema, startConversationSchema } from '../utils/validation';
+import { createMessageSchema, markReadSchema, messagesQuerySchema, startConversationSchema } from '../utils/validation';
 import { AUTHOR_FIELDS, publicUser } from '../utils/serializers';
 import { getIo } from '../services/notifications';
 import { userRoom } from '../realtime';
@@ -9,16 +9,24 @@ import { IAuthRequest, IConversation } from '../types';
 
 type ParticipantDoc = Parameters<typeof publicUser>[0];
 
-const summarize = (conversation: IConversation | Record<string, unknown>, viewerId: string) => {
+// Unread state lives only on the messages themselves, so concurrent sends and reads cannot drift apart.
+const unreadFor = (viewer: Types.ObjectId, conversationIds: Types.ObjectId[]) =>
+  Message.aggregate<{ _id: Types.ObjectId; count: number }>([
+    { $match: { conversation: { $in: conversationIds }, sender: { $ne: viewer }, isRead: false } },
+    { $group: { _id: '$conversation', count: { $sum: 1 } } },
+  ]);
+
+const unreadMap = async (viewer: Types.ObjectId, conversationIds: Types.ObjectId[]) =>
+  new Map((await unreadFor(viewer, conversationIds)).map((row) => [row._id.toString(), row.count]));
+
+const summarize = (conversation: IConversation | Record<string, unknown>, viewerId: string, unread = 0) => {
   const c = conversation as unknown as {
     _id: Types.ObjectId;
     participants: ParticipantDoc[];
     lastMessage?: { content: string; sender: Types.ObjectId; createdAt: Date } | null;
-    unreadCount?: Record<string, number> | Map<string, number>;
     updatedAt: Date;
   };
   const other = c.participants.find((p) => p._id.toString() !== viewerId) ?? c.participants[0];
-  const unread = c.unreadCount instanceof Map ? c.unreadCount.get(viewerId) : c.unreadCount?.[viewerId];
 
   return {
     _id: c._id.toString(),
@@ -26,7 +34,7 @@ const summarize = (conversation: IConversation | Record<string, unknown>, viewer
     lastMessage: c.lastMessage
       ? { content: c.lastMessage.content, sender: c.lastMessage.sender.toString(), createdAt: c.lastMessage.createdAt }
       : null,
-    unreadCount: unread ?? 0,
+    unreadCount: unread,
     updatedAt: c.updatedAt,
   };
 };
@@ -49,10 +57,15 @@ const findOrCreateDirectConversation = async (a: Types.ObjectId, b: Types.Object
     .select('_id')
     .lean();
   if (legacy) {
-    await Conversation.updateOne({ _id: legacy._id }, { $set: { pairKey } }).catch((error) => {
+    try {
+      await Conversation.updateOne({ _id: legacy._id }, { $set: { pairKey } });
+      return legacy._id;
+    } catch (error) {
       if (!isDuplicateKey(error)) throw error;
-    });
-    return legacy._id;
+      // Another request keyed this pair first; always hand back the canonical conversation.
+      const winner = await Conversation.findOne({ pairKey }).select('_id').lean();
+      return winner!._id;
+    }
   }
 
   try {
@@ -79,20 +92,18 @@ export const listConversations = async (req: IAuthRequest, res: Response): Promi
     .populate('participants', PARTICIPANT_FIELDS)
     .populate('lastMessage', 'content sender createdAt')
     .lean();
+  const counts = await unreadMap(req.user!._id, conversations.map((c) => c._id));
 
   res.status(200).json({
     success: true,
-    data: { conversations: conversations.map((c) => summarize(c, viewerId)) },
+    data: { conversations: conversations.map((c) => summarize(c, viewerId, counts.get(c._id.toString()))) },
   });
 };
 
 export const getUnreadTotal = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const viewerId = req.user!._id.toString();
-  const [row] = await Conversation.aggregate<{ total: number }>([
-    { $match: { participants: req.user!._id } },
-    { $group: { _id: null, total: { $sum: { $ifNull: [`$unreadCount.${viewerId}`, 0] } } } },
-  ]);
-  res.status(200).json({ success: true, data: { unreadCount: row?.total ?? 0 } });
+  const ids = await Conversation.find({ participants: req.user!._id }).distinct('_id');
+  const rows = await unreadFor(req.user!._id, ids);
+  res.status(200).json({ success: true, data: { unreadCount: rows.reduce((sum, row) => sum + row.count, 0) } });
 };
 
 export const startConversation = async (req: IAuthRequest, res: Response): Promise<void> => {
@@ -115,7 +126,11 @@ export const startConversation = async (req: IAuthRequest, res: Response): Promi
     .populate('lastMessage', 'content sender createdAt')
     .lean();
 
-  res.status(200).json({ success: true, data: { conversation: summarize(conversation!, me.toString()) } });
+  const counts = await unreadMap(me, [conversationId]);
+  res.status(200).json({
+    success: true,
+    data: { conversation: summarize(conversation!, me.toString(), counts.get(conversationId.toString())) },
+  });
 };
 
 export const getConversation = async (req: IAuthRequest, res: Response): Promise<void> => {
@@ -128,7 +143,11 @@ export const getConversation = async (req: IAuthRequest, res: Response): Promise
     res.status(404).json({ success: false, error: 'Conversation not found' });
     return;
   }
-  res.status(200).json({ success: true, data: { conversation: summarize(conversation, req.user!._id.toString()) } });
+  const counts = await unreadMap(req.user!._id, [conversation._id]);
+  res.status(200).json({
+    success: true,
+    data: { conversation: summarize(conversation, req.user!._id.toString(), counts.get(conversation._id.toString())) },
+  });
 };
 
 export const getMessages = async (req: IAuthRequest, res: Response): Promise<void> => {
@@ -173,11 +192,7 @@ export const sendMessage = async (req: IAuthRequest, res: Response): Promise<voi
   }
 
   const message = await Message.create({ conversation: conversation._id, sender, content });
-  const recipients = conversation.participants.filter((id) => !id.equals(sender));
-
-  const inc: Record<string, number> = {};
-  for (const id of recipients) inc[`unreadCount.${id.toString()}`] = 1;
-  await Conversation.updateOne({ _id: conversation._id }, { $set: { lastMessage: message._id }, $inc: inc });
+  await Conversation.updateOne({ _id: conversation._id }, { $set: { lastMessage: message._id } });
 
   const payload = { conversationId: conversation._id.toString(), message: message.toJSON() };
   const io = getIo(req);
@@ -194,12 +209,22 @@ export const markConversationRead = async (req: IAuthRequest, res: Response): Pr
     return;
   }
 
-  const unreadFilter = { conversation: conversation._id, sender: { $ne: me }, isRead: false };
-  const cutoff = new Date();
-  await Message.updateMany({ ...unreadFilter, createdAt: { $lte: cutoff } }, { $set: { isRead: true } });
-  // Recount instead of zeroing so a message that arrives mid-request keeps its unread badge.
-  const remaining = await Message.countDocuments(unreadFilter);
-  await Conversation.updateOne({ _id: conversation._id }, { $set: { [`unreadCount.${me.toString()}`]: remaining } });
+  // Only messages up to the last one the reader actually saw are marked; anything newer stays unread.
+  const { upTo } = markReadSchema.parse(req.body ?? {});
+  const watermark = await Message.findOne({ _id: upTo, conversation: conversation._id }).select('createdAt').lean();
+  if (!watermark) {
+    res.status(400).json({ success: false, error: 'Invalid message' });
+    return;
+  }
+  await Message.updateMany(
+    {
+      conversation: conversation._id,
+      sender: { $ne: me },
+      isRead: false,
+      $or: [{ createdAt: { $lt: watermark.createdAt } }, { createdAt: watermark.createdAt, _id: { $lte: watermark._id } }],
+    },
+    { $set: { isRead: true } }
+  );
 
   const io = getIo(req);
   for (const id of conversation.participants) {

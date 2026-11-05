@@ -29,7 +29,7 @@ const queryClient = new QueryClient({
 
 // Wipe every cached response the moment the signed-in account changes, before the next account renders.
 useAuthStore.subscribe((state, prev) => {
-  if (state.user?._id === prev.user?._id) return;
+  if (state.user?._id === prev.user?._id && state.generation === prev.generation) return;
   queryClient.cancelQueries();
   queryClient.clear();
 });
@@ -56,9 +56,9 @@ const PublicRoute = ({ children }: { children: ReactNode }) => {
 
 const AuthInitializer = ({ children }: { children: ReactNode }) => {
   const hasToken = useAuthStore((s) => Boolean(s.tokens?.accessToken));
-  const { setUser, setLoading, logout } = useAuthStore.getState();
 
   useEffect(() => {
+    const { generation, setUser, setLoading, logoutFor } = useAuthStore.getState();
     if (!hasToken) {
       setLoading(false);
       return;
@@ -68,10 +68,10 @@ const AuthInitializer = ({ children }: { children: ReactNode }) => {
       .then(setUser)
       .catch((error) => {
         // Keep the cached session when the server is simply unreachable
-        if (axios.isAxiosError(error) && error.response?.status === 401) logout();
+        if (axios.isAxiosError(error) && error.response?.status === 401) logoutFor(generation);
       })
       .finally(() => setLoading(false));
-  }, [hasToken, setUser, setLoading, logout]);
+  }, [hasToken]);
 
   return <>{children}</>;
 };

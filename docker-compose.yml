@@ -1,4 +1,6 @@
 # Production-style stack. Copy .env.example to .env and set real secrets first.
+# To run published images instead of building: set IMAGE_PREFIX=<dockerhub user> and IMAGE_TAG=<commit sha>,
+# then `docker compose pull && docker compose up -d --no-build`.
 # For local development (database only) use: docker compose -f docker-compose.dev.yml up -d
 services:
   mongodb:
@@ -17,6 +19,7 @@ services:
       - backend
 
   api:
+    image: ${IMAGE_PREFIX:-friendster}/friendster-api:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: docker/Dockerfile.api
@@ -40,6 +43,7 @@ services:
       - frontend
 
   web:
+    image: ${IMAGE_PREFIX:-friendster}/friendster-web:${IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: docker/Dockerfile.web
