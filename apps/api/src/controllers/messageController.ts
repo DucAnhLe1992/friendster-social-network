@@ -36,6 +36,41 @@ const PARTICIPANT_FIELDS = `${AUTHOR_FIELDS} followers`;
 const findOwnConversation = (id: string, userId: Types.ObjectId) =>
   Conversation.findOne({ _id: id, participants: userId });
 
+const isDuplicateKey = (error: unknown) => (error as { code?: number })?.code === 11000;
+
+const findOrCreateDirectConversation = async (a: Types.ObjectId, b: Types.ObjectId): Promise<Types.ObjectId> => {
+  const participants = [a, b].sort((x, y) => x.toString().localeCompare(y.toString()));
+  const pairKey = participants.map(String).join(':');
+
+  const existing = await Conversation.findOne({ pairKey }).select('_id').lean();
+  if (existing) return existing._id;
+
+  const legacy = await Conversation.findOne({ pairKey: { $exists: false }, participants: { $all: participants, $size: 2 } })
+    .select('_id')
+    .lean();
+  if (legacy) {
+    await Conversation.updateOne({ _id: legacy._id }, { $set: { pairKey } }).catch((error) => {
+      if (!isDuplicateKey(error)) throw error;
+    });
+    return legacy._id;
+  }
+
+  try {
+    const created = await Conversation.findOneAndUpdate(
+      { pairKey },
+      { $setOnInsert: { pairKey, participants } },
+      { new: true, upsert: true }
+    )
+      .select('_id')
+      .lean();
+    return created!._id;
+  } catch (error) {
+    if (!isDuplicateKey(error)) throw error;
+    const winner = await Conversation.findOne({ pairKey }).select('_id').lean();
+    return winner!._id;
+  }
+};
+
 export const listConversations = async (req: IAuthRequest, res: Response): Promise<void> => {
   const viewerId = req.user!._id.toString();
   const conversations = await Conversation.find({ participants: req.user!._id, lastMessage: { $ne: null } })
@@ -74,12 +109,8 @@ export const startConversation = async (req: IAuthRequest, res: Response): Promi
     return;
   }
 
-  const participants = [me, other._id].sort((a, b) => a.toString().localeCompare(b.toString()));
-  const conversation = await Conversation.findOneAndUpdate(
-    { participants: { $all: participants, $size: 2 } },
-    { $setOnInsert: { participants } },
-    { new: true, upsert: true }
-  )
+  const conversationId = await findOrCreateDirectConversation(me, other._id);
+  const conversation = await Conversation.findById(conversationId)
     .populate('participants', PARTICIPANT_FIELDS)
     .populate('lastMessage', 'content sender createdAt')
     .lean();
@@ -109,9 +140,19 @@ export const getMessages = async (req: IAuthRequest, res: Response): Promise<voi
   }
 
   const query: Record<string, unknown> = { conversation: conversation._id };
-  if (before) query.createdAt = { $lt: new Date(before) };
+  if (before) {
+    const cursor = await Message.findOne({ _id: before, conversation: conversation._id }).select('createdAt').lean();
+    if (!cursor) {
+      res.status(400).json({ success: false, error: 'Invalid cursor' });
+      return;
+    }
+    query.$or = [
+      { createdAt: { $lt: cursor.createdAt } },
+      { createdAt: cursor.createdAt, _id: { $lt: cursor._id } },
+    ];
+  }
 
-  const messages = await Message.find(query).sort({ createdAt: -1 }).limit(limit + 1).lean();
+  const messages = await Message.find(query).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
   const hasMore = messages.length > limit;
 
   res.status(200).json({
@@ -147,19 +188,18 @@ export const sendMessage = async (req: IAuthRequest, res: Response): Promise<voi
 
 export const markConversationRead = async (req: IAuthRequest, res: Response): Promise<void> => {
   const me = req.user!._id;
-  const conversation = await Conversation.findOneAndUpdate(
-    { _id: req.params.id, participants: me },
-    { $set: { [`unreadCount.${me.toString()}`]: 0 } }
-  );
+  const conversation = await findOwnConversation(req.params.id, me).select('participants').lean();
   if (!conversation) {
     res.status(404).json({ success: false, error: 'Conversation not found' });
     return;
   }
 
-  await Message.updateMany(
-    { conversation: conversation._id, sender: { $ne: me }, isRead: false },
-    { $set: { isRead: true } }
-  );
+  const unreadFilter = { conversation: conversation._id, sender: { $ne: me }, isRead: false };
+  const cutoff = new Date();
+  await Message.updateMany({ ...unreadFilter, createdAt: { $lte: cutoff } }, { $set: { isRead: true } });
+  // Recount instead of zeroing so a message that arrives mid-request keeps its unread badge.
+  const remaining = await Message.countDocuments(unreadFilter);
+  await Conversation.updateOne({ _id: conversation._id }, { $set: { [`unreadCount.${me.toString()}`]: remaining } });
 
   const io = getIo(req);
   for (const id of conversation.participants) {

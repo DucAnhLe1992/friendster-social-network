@@ -25,7 +25,6 @@ const storySchema = new Schema<IStory>(
     expiresAt: {
       type: Date,
       required: [true, 'Expiration date is required'],
-      index: true,
     },
   },
   {

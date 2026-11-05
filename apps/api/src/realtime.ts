@@ -7,6 +7,9 @@ import { ServerToClientEvents, ClientToServerEvents, InterServerEvents, SocketDa
 
 export type RealtimeServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 
+const TYPING_WINDOW_MS = 5000;
+const TYPING_EVENTS_PER_WINDOW = 10;
+
 export const userRoom = (userId: string): string => `user:${userId}`;
 
 const otherParticipants = async (conversationId: string, userId: string): Promise<string[] | null> => {
@@ -30,6 +33,7 @@ export const setupRealtime = (httpServer: HttpServer): RealtimeServer => {
       const payload = verifyAccessToken(token);
       socket.data.userId = payload.userId;
       socket.data.handle = payload.handle;
+      socket.data.expiresAt = (payload.exp ?? 0) * 1000;
       next();
     } catch {
       next(new Error('Unauthorized'));
@@ -39,7 +43,24 @@ export const setupRealtime = (httpServer: HttpServer): RealtimeServer => {
   io.on('connection', (socket) => {
     socket.join(userRoom(socket.data.userId));
 
+    // Auth runs once per connection, so cut the socket when its token expires; the client reconnects with a fresh one.
+    const expiryTimer = setTimeout(() => socket.disconnect(true), Math.max(0, socket.data.expiresAt - Date.now()));
+    socket.on('disconnect', () => clearTimeout(expiryTimer));
+
+    let windowStart = Date.now();
+    let eventsInWindow = 0;
+    const allowEvent = () => {
+      const now = Date.now();
+      if (now - windowStart > TYPING_WINDOW_MS) {
+        windowStart = now;
+        eventsInWindow = 0;
+      }
+      eventsInWindow += 1;
+      return eventsInWindow <= TYPING_EVENTS_PER_WINDOW;
+    };
+
     const relayTyping = (isTyping: boolean) => async (conversationId: string) => {
+      if (typeof conversationId !== 'string' || !allowEvent()) return;
       try {
         const recipients = await otherParticipants(conversationId, socket.data.userId);
         if (!recipients) return;

@@ -17,7 +17,7 @@ import CreatePost from '@/components/custom/CreatePost';
 import UserAvatar from '@/components/custom/UserAvatar';
 import RightRail from '@/layouts/RightRail';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient } from '@/lib/api';
+import { apiClient, signOut } from '@/lib/api';
 
 const Badge = ({ count, className = '' }: { count: number; className?: string }) =>
   count > 0 ? (
@@ -29,7 +29,7 @@ const Badge = ({ count, className = '' }: { count: number; className?: string })
   ) : null;
 
 const MainLayout = () => {
-  const { user, isAuthenticated, logout } = useAuthStore();
+  const { user, isAuthenticated } = useAuthStore();
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [composeOpen, setComposeOpen] = useState(false);
@@ -57,10 +57,25 @@ const MainLayout = () => {
     { icon: User, label: 'Profile', path: `/profile/${user?.handle ?? ''}`, badge: 0 },
   ];
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await signOut();
     navigate('/login');
   };
+
+  const accountMenuItems = user && (
+    <>
+      <DropdownMenuLabel className="truncate">{user.email ?? `@${user.handle}`}</DropdownMenuLabel>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onSelect={() => navigate(`/profile/${user.handle}`)}>
+        <User className="w-4 h-4 mr-2" />
+        Your profile
+      </DropdownMenuItem>
+      <DropdownMenuItem onSelect={handleLogout} className="text-destructive focus:text-destructive">
+        <LogOut className="w-4 h-4 mr-2" />
+        Sign out
+      </DropdownMenuItem>
+    </>
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -95,6 +110,7 @@ const MainLayout = () => {
 
             <Button
               onClick={() => setComposeOpen(true)}
+              aria-label="Create post"
               className="w-full mt-4 h-12 rounded-full bg-gradient-to-r from-primary to-accent text-white font-semibold hover:opacity-90 glow-primary"
             >
               <Feather className="w-5 h-5 xl:hidden" />
@@ -105,7 +121,10 @@ const MainLayout = () => {
           {user && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-3 p-2 rounded-full hover:bg-secondary transition-colors text-left">
+                <button
+                  aria-label="Account menu"
+                  className="flex items-center gap-3 p-2 rounded-full hover:bg-secondary transition-colors text-left"
+                >
                   <UserAvatar user={user} className="w-10 h-10" />
                   <div className="flex-1 min-w-0 hidden xl:block">
                     <p className="font-semibold text-sm truncate">{user.displayName}</p>
@@ -114,16 +133,7 @@ const MainLayout = () => {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-56">
-                <DropdownMenuLabel className="truncate">{user.email ?? `@${user.handle}`}</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => navigate(`/profile/${user.handle}`)}>
-                  <User className="w-4 h-4 mr-2" />
-                  Your profile
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={handleLogout} className="text-destructive focus:text-destructive">
-                  <LogOut className="w-4 h-4 mr-2" />
-                  Sign out
-                </DropdownMenuItem>
+                {accountMenuItems}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -138,7 +148,7 @@ const MainLayout = () => {
 
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 glass border-t border-border pb-[env(safe-area-inset-bottom)]">
         <div className="flex justify-around py-1.5">
-          {navItems.map((item) => (
+          {navItems.filter((item) => item.label !== 'Profile').map((item) => (
             <NavLink
               key={item.label}
               to={item.path}
@@ -150,6 +160,21 @@ const MainLayout = () => {
               <Badge count={item.badge} className="top-1.5 right-1" />
             </NavLink>
           ))}
+          {user && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label="Account menu"
+                  className={`p-2.5 rounded-xl transition-colors ${pathname.startsWith('/profile/' + user.handle) ? 'text-primary' : 'text-muted-foreground'}`}
+                >
+                  <UserAvatar user={user} className="w-7 h-7" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="end" className="w-56 mb-2">
+                {accountMenuItems}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </nav>
 

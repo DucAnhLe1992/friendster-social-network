@@ -79,7 +79,7 @@ export const createMessageSchema = z.object({
 });
 
 export const messagesQuerySchema = z.object({
-  before: z.string().datetime().optional(),
+  before: z.string().regex(/^[a-f\d]{24}$/i, 'Invalid cursor').optional(),
   limit: z.coerce.number().int().min(1).max(50).default(30),
 });
 

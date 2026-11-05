@@ -30,7 +30,7 @@ const messageSchema = new Schema<IMessage>(
 );
 
 // Indexes
-messageSchema.index({ conversation: 1, createdAt: -1 });
+messageSchema.index({ conversation: 1, createdAt: -1, _id: -1 });
 messageSchema.index({ sender: 1 });
 
 export const Message = mongoose.model<IMessage>('Message', messageSchema);
@@ -42,6 +42,9 @@ const conversationSchema = new Schema<IConversation>(
       ref: 'User',
       required: [true, 'Participants are required'],
     }],
+    pairKey: {
+      type: String,
+    },
     lastMessage: {
       type: Schema.Types.ObjectId,
       ref: 'Message',
@@ -61,5 +64,6 @@ const conversationSchema = new Schema<IConversation>(
 // Indexes
 conversationSchema.index({ participants: 1 });
 conversationSchema.index({ updatedAt: -1 });
+conversationSchema.index({ pairKey: 1 }, { unique: true, sparse: true });
 
 export const Conversation = mongoose.model<IConversation>('Conversation', conversationSchema);

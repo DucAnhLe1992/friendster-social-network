@@ -14,10 +14,9 @@ import {
   searchPosts,
 } from '../controllers/postController';
 import { authenticate, optionalAuth } from '../middleware/auth';
-import { imageUpload } from '../middleware/upload';
+import { multipleImages } from '../middleware/upload';
 
 const router = Router();
-const upload = imageUpload('posts');
 
 router.get('/feed', authenticate, getFeed);
 router.get('/trending', getTrending);
@@ -26,7 +25,7 @@ router.get('/', optionalAuth, getAllPosts);
 router.get('/user/:handle', optionalAuth, getUserPosts);
 router.get('/:id', optionalAuth, getPost);
 
-router.post('/images', authenticate, upload.array('images', 4), uploadPostImages);
+router.post('/images', authenticate, ...multipleImages('posts', 'images', 4), uploadPostImages);
 router.post('/', authenticate, createPost);
 router.put('/:id', authenticate, updatePost);
 router.delete('/:id', authenticate, deletePost);

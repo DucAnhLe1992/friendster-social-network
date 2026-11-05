@@ -1,0 +1,12 @@
+# Local development: only MongoDB, reachable from the host on 127.0.0.1:27017.
+services:
+  mongodb:
+    image: mongo:7-jammy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongodb_dev_data:/data/db
+
+volumes:
+  mongodb_dev_data:

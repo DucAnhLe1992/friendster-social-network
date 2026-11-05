@@ -28,7 +28,9 @@ const CreatePost = ({ onSuccess, autoFocus }: { onSuccess?: () => void; autoFocu
   const textarea = useRef<HTMLTextAreaElement>(null);
 
   const previews = useRef<string[]>([]);
-  previews.current = attachments.map((a) => a.preview);
+  useEffect(() => {
+    previews.current = attachments.map((a) => a.preview);
+  }, [attachments]);
   useEffect(() => () => previews.current.forEach(URL.revokeObjectURL), []);
 
   useEffect(() => {

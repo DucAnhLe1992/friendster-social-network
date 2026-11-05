@@ -80,6 +80,7 @@ export interface IMessage extends Document {
 export interface IConversation extends Document {
   _id: Types.ObjectId;
   participants: Types.ObjectId[];
+  pairKey?: string;
   lastMessage?: Types.ObjectId | IMessage | null;
   unreadCount: Map<string, number>;
   createdAt: Date;
@@ -149,4 +150,5 @@ export interface InterServerEvents {
 export interface SocketData {
   userId: string;
   handle: string;
+  expiresAt: number;
 }

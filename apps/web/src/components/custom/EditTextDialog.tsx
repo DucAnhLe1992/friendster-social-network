@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,9 +18,11 @@ const EditTextDialog = ({ open, onOpenChange, title, initialValue, maxLength, al
   const [value, setValue] = useState(initialValue);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (open) setValue(initialValue);
-  }, [open, initialValue]);
+  }
 
   const trimmed = value.trim();
   const invalid = value.length > maxLength || (!allowEmpty && !trimmed) || trimmed === initialValue.trim();

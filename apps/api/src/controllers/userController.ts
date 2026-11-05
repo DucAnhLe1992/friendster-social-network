@@ -2,7 +2,7 @@ import { Response } from 'express';
 import { User, Notification, Post, Comment } from '../models';
 import { updateProfileSchema, escapeRegex } from '../utils/validation';
 import { AUTHOR_FIELDS, publicUser, selfUser } from '../utils/serializers';
-import { uploadedPath } from '../middleware/upload';
+import { removeUpload, uploadedPath } from '../middleware/upload';
 import { notify } from '../services/notifications';
 import { IAuthRequest } from '../types';
 
@@ -36,11 +36,9 @@ const saveImage = (field: 'avatar' | 'coverImage', folder: 'avatars' | 'covers')
       return;
     }
 
-    const user = await User.findByIdAndUpdate(
-      req.user!._id,
-      { $set: { [field]: uploadedPath(folder, req.file.filename) } },
-      { new: true }
-    );
+    const previous = await User.findByIdAndUpdate(req.user!._id, { $set: { [field]: uploadedPath(folder, req.file.filename) } });
+    await removeUpload(previous?.[field]);
+    const user = await User.findById(req.user!._id);
     res.status(200).json({ success: true, data: { user: selfUser(user!) } });
   };
 

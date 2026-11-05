@@ -1,12 +1,9 @@
 import { Request, Response } from 'express';
 import { User } from '../models';
-import { generateTokens, verifyRefreshToken } from '../utils/jwt';
+import { endSession, rotateSession, startSession } from '../services/sessions';
 import { registerSchema, loginSchema } from '../utils/validation';
 import { selfUser } from '../utils/serializers';
-import { IApiResponse, IAuthRequest, IUser } from '../types';
-
-const issueTokens = (user: IUser) =>
-  generateTokens({ userId: user._id.toString(), handle: user.handle, role: user.role });
+import { IApiResponse, IAuthRequest } from '../types';
 
 export const register = async (req: Request, res: Response): Promise<void> => {
   const data = registerSchema.parse(req.body);
@@ -25,7 +22,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
   const response: IApiResponse = {
     success: true,
-    data: { user: selfUser(user), tokens: issueTokens(user) },
+    data: { user: selfUser(user), tokens: await startSession(user) },
     message: 'Registration successful',
   };
   res.status(201).json(response);
@@ -42,7 +39,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
   const response: IApiResponse = {
     success: true,
-    data: { user: selfUser(user), tokens: issueTokens(user) },
+    data: { user: selfUser(user), tokens: await startSession(user) },
     message: 'Login successful',
   };
   res.status(200).json(response);
@@ -52,26 +49,29 @@ export const getMe = async (req: IAuthRequest, res: Response): Promise<void> => 
   res.status(200).json({ success: true, data: { user: selfUser(req.user!) } });
 };
 
-export const refreshToken = async (req: Request, res: Response): Promise<void> => {
+const readRefreshToken = (req: Request): string | null => {
   const token = req.body?.refreshToken;
-  if (typeof token !== 'string' || !token) {
+  return typeof token === 'string' && token ? token : null;
+};
+
+export const refreshToken = async (req: Request, res: Response): Promise<void> => {
+  const token = readRefreshToken(req);
+  if (!token) {
     res.status(401).json({ success: false, error: 'Refresh token required' });
     return;
   }
 
-  let userId: string;
-  try {
-    userId = verifyRefreshToken(token).userId;
-  } catch {
-    res.status(401).json({ success: false, error: 'Invalid refresh token' });
+  const session = await rotateSession(token);
+  if (!session) {
+    res.status(401).json({ success: false, error: 'Session expired. Please sign in again.' });
     return;
   }
 
-  const user = await User.findById(userId);
-  if (!user) {
-    res.status(401).json({ success: false, error: 'User not found' });
-    return;
-  }
+  res.status(200).json({ success: true, data: { tokens: session.tokens } });
+};
 
-  res.status(200).json({ success: true, data: { tokens: issueTokens(user) } });
+export const logout = async (req: Request, res: Response): Promise<void> => {
+  const token = readRefreshToken(req);
+  if (token) await endSession(token);
+  res.status(200).json({ success: true });
 };
