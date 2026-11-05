@@ -1,0 +1,29 @@
+{
+  "name": "friendster-modern",
+  "version": "1.0.0",
+  "description": "A modern, full-stack social media platform built with TypeScript",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "cd apps/api && npm run dev",
+    "dev:web": "cd apps/web && npm run dev",
+    "build": "npm run build:api && npm run build:web",
+    "build:api": "cd apps/api && npm run build",
+    "build:web": "cd apps/web && npm run build",
+    "install:all": "npm install && cd apps/api && npm install && cd ../web && npm install",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:build": "docker-compose up -d --build",
+    "lint": "cd apps/api && npm run lint && cd ../web && npm run lint",
+    "typecheck": "cd apps/api && npm run typecheck && cd ../web && npx tsc --noEmit"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
