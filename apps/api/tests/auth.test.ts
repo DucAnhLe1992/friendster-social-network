@@ -37,6 +37,24 @@ describe('sessions', () => {
     expect((await refresh(alice.refreshToken)).status).toBe(401);
   });
 
+  it('logout with an already-rotated token also revokes its successor', async () => {
+    const alice = await registerUser('alice');
+    const rotated = await refresh(alice.refreshToken);
+    const successor = rotated.body.data.tokens.refreshToken as string;
+
+    await request(app).post('/api/auth/logout').send({ refreshToken: alice.refreshToken }).expect(200);
+    expect((await refresh(successor)).status).toBe(401);
+  });
+
+  it('logout leaves the same account signed in on other devices', async () => {
+    const alice = await registerUser('alice');
+    const login = await request(app).post('/api/auth/login').send({ email: 'alice@example.com', password: 'Password123!' });
+    const otherDevice = login.body.data.tokens.refreshToken as string;
+
+    await request(app).post('/api/auth/logout').send({ refreshToken: alice.refreshToken }).expect(200);
+    expect((await refresh(otherDevice)).status).toBe(200);
+  });
+
   it('does not let profile updates change privileged fields', async () => {
     const alice = await registerUser('alice');
     const res = await request(app)

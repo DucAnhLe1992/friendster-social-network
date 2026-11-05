@@ -54,7 +54,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
   useEffect(() => {
     if (!lastMessage) return;
     apiClient
-      .markConversationRead(conversationId)
+      .markConversationRead(conversationId, lastMessage._id)
       .then(() => {
         queryClient.invalidateQueries({ queryKey: ['unread', 'messages'] });
         queryClient.invalidateQueries({ queryKey: ['conversations'] });

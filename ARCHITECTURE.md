@@ -29,7 +29,7 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 ### DevOps & Infrastructure
 - **Containerization**: Docker + Docker Compose
 - **CI/CD**: GitHub Actions
-- **Testing**: Vitest (frontend), Jest (backend)
+- **Testing**: Vitest + Supertest API integration tests (no frontend test suite yet)
 - **Code Quality**: ESLint, Prettier, Husky
 
 ## Project Structure
@@ -84,7 +84,7 @@ friendster-modern/
 - Like, comment, follow notifications
 - Mark as read
 
-## Advanced Features (Senior Level)
+## Additional Features
 
 ### Stories
 - 24-hour disappearing stories

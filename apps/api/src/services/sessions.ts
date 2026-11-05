@@ -6,12 +6,14 @@ import { IUser, ITokens } from '../types';
 // Concurrent refreshes from several tabs may legitimately present the same token for a moment.
 const REUSE_GRACE_MS = 30 * 1000;
 
-export const startSession = async (user: IUser): Promise<ITokens> => {
+const issue = async (user: IUser, family: string): Promise<ITokens> => {
   const jti = crypto.randomUUID();
   const tokens = generateTokens({ userId: user._id.toString(), handle: user.handle, role: user.role }, jti);
-  await RefreshSession.create({ user: user._id, jti, expiresAt: tokenExpiry(tokens.refreshToken) });
+  await RefreshSession.create({ user: user._id, jti, family, expiresAt: tokenExpiry(tokens.refreshToken) });
   return tokens;
 };
+
+export const startSession = (user: IUser): Promise<ITokens> => issue(user, crypto.randomUUID());
 
 const decode = (refreshToken: string) => {
   try {
@@ -27,9 +29,10 @@ export const rotateSession = async (refreshToken: string): Promise<{ user: IUser
   if (!claims) return null;
 
   const now = new Date();
+  // Rotated records are kept until their own expiry so logout and replay detection can still find the family.
   const claimed = await RefreshSession.findOneAndUpdate(
     { jti: claims.jti, user: claims.userId, rotatedAt: null, expiresAt: { $gt: now } },
-    { $set: { rotatedAt: now, expiresAt: new Date(now.getTime() + REUSE_GRACE_MS) } }
+    { $set: { rotatedAt: now } }
   );
 
   if (!claimed) {
@@ -48,10 +51,22 @@ export const rotateSession = async (refreshToken: string): Promise<{ user: IUser
     return null;
   }
 
-  return { user, tokens: await startSession(user) };
+  const family = claimed.family ?? claimed.jti;
+  const tokens = await issue(user, family);
+
+  // A logout that raced this rotation deleted the family before our successor existed; honour it.
+  if (!(await RefreshSession.exists({ _id: claimed._id }))) {
+    await RefreshSession.deleteMany({ family });
+    return null;
+  }
+
+  return { user, tokens };
 };
 
 export const endSession = async (refreshToken: string): Promise<void> => {
   const claims = decode(refreshToken);
-  if (claims) await RefreshSession.deleteOne({ jti: claims.jti, user: claims.userId });
+  if (!claims) return;
+  const session = await RefreshSession.findOne({ jti: claims.jti, user: claims.userId }).lean();
+  if (!session) return;
+  await RefreshSession.deleteMany({ user: claims.userId, family: session.family ?? session.jti });
 };

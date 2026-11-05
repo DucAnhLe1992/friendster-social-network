@@ -2,6 +2,9 @@ import mongoose from 'mongoose';
 import { env } from './config/env';
 import connectDB from './config/database';
 import { createApp } from './app';
+import { sweepAbandonedUploads } from './services/media';
+
+const ABANDONED_UPLOAD_AGE_MS = 24 * 60 * 60 * 1000;
 
 const start = async () => {
   await connectDB(env.MONGODB_URI);
@@ -11,8 +14,17 @@ const start = async () => {
     console.log(`Friendster API listening on port ${env.PORT} (${env.NODE_ENV})`);
   });
 
+  const sweep = () =>
+    sweepAbandonedUploads(ABANDONED_UPLOAD_AGE_MS)
+      .then((count) => count && console.log(`Removed ${count} abandoned upload(s)`))
+      .catch((error) => console.error('Upload sweep failed:', error));
+  const sweeper = setInterval(sweep, 60 * 60 * 1000);
+  sweeper.unref();
+  void sweep();
+
   const shutdown = (signal: string) => {
     console.log(`${signal} received, shutting down`);
+    clearInterval(sweeper);
     const force = setTimeout(() => process.exit(1), 10000);
     force.unref();
     io.close();

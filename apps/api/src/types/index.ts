@@ -82,7 +82,6 @@ export interface IConversation extends Document {
   participants: Types.ObjectId[];
   pairKey?: string;
   lastMessage?: Types.ObjectId | IMessage | null;
-  unreadCount: Map<string, number>;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -63,8 +63,9 @@ export const followUser = async (req: IAuthRequest, res: Response): Promise<void
     { $push: { followers: currentUserId } }
   );
 
+  // Always applied (idempotently) so retrying after a partial failure repairs the follower's side.
+  await User.updateOne({ _id: currentUserId }, { $addToSet: { following: target._id } });
   if (result.modifiedCount > 0) {
-    await User.updateOne({ _id: currentUserId }, { $addToSet: { following: target._id } });
     await notify(req, { recipient: target._id, sender: currentUserId, type: 'follow' });
   }
 

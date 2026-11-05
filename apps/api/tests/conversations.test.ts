@@ -72,13 +72,15 @@ describe('conversations', () => {
     const bob = await registerUser('bob');
     const start = await request(app).post('/api/conversations').set(auth(alice)).send({ handle: 'bob' });
     const id = start.body.data.conversation._id;
-    await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'hello' });
+    const first = await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'hello' });
 
     const before = await request(app).get('/api/conversations/unread-count').set(auth(bob));
     expect(before.body.data.unreadCount).toBe(1);
 
-    await request(app).post(`/api/conversations/${id}/read`).set(auth(bob)).expect(200);
+    // A message that arrives after the one Bob saw stays unread.
+    await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'unseen' });
+    await request(app).post(`/api/conversations/${id}/read`).set(auth(bob)).send({ upTo: first.body.data.message._id }).expect(200);
     const after = await request(app).get('/api/conversations/unread-count').set(auth(bob));
-    expect(after.body.data.unreadCount).toBe(0);
+    expect(after.body.data.unreadCount).toBe(1);
   });
 });

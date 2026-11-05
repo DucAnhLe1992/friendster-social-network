@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import multer from 'multer';
+import sharp from 'sharp';
 import { NextFunction, Request, Response } from 'express';
 import { HttpError } from './errorHandler';
 import { IAuthRequest } from '../types';
@@ -56,10 +57,45 @@ const collectFiles = (req: Request): Express.Multer.File[] => {
   return [];
 };
 
-// The client-supplied MIME type is only a hint; reject files whose bytes are not the claimed image format.
+// Files are rewritten in place, so never serve a decoded copy from libvips' cache.
+sharp.cache(false);
+
+const MAX_INPUT_PIXELS = 50_000_000;
+const MAX_DIMENSION = 4096;
+
+// Fully decodes the image (rejecting truncated or malformed files), bounds its size, strips metadata such as GPS
+// location, and writes a freshly encoded copy in the same format.
+const reencode = async (file: Express.Multer.File): Promise<void> => {
+  const animated = file.mimetype === 'image/gif' || file.mimetype === 'image/webp';
+  let image = sharp(file.path, { animated, limitInputPixels: MAX_INPUT_PIXELS, failOn: 'error' });
+  if (file.mimetype === 'image/jpeg') image = image.rotate();
+  image = image.resize({ width: MAX_DIMENSION, height: MAX_DIMENSION, fit: 'inside', withoutEnlargement: true });
+
+  const encoders: Record<string, (img: sharp.Sharp) => sharp.Sharp> = {
+    'image/jpeg': (img) => img.jpeg({ quality: 88, mozjpeg: true }),
+    'image/png': (img) => img.png(),
+    'image/webp': (img) => img.webp({ quality: 88 }),
+    'image/gif': (img) => img.gif(),
+  };
+  const output = await encoders[file.mimetype](image).toBuffer();
+  await fs.promises.writeFile(file.path, output);
+  file.size = output.length;
+};
+
+const isValidImage = async (file: Express.Multer.File): Promise<boolean> => {
+  try {
+    if (!matchesSignature(file.mimetype, await readHead(file.path))) return false;
+    await reencode(file);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// The client-supplied MIME type is only a hint; every file must decode as the claimed image format.
 const verifyImages = async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
   const files = collectFiles(req);
-  const checks = await Promise.all(files.map(async (f) => matchesSignature(f.mimetype, await readHead(f.path))));
+  const checks = await Promise.all(files.map(isValidImage));
   if (checks.every(Boolean)) return next();
 
   await Promise.all(files.map((f) => fs.promises.unlink(f.path).catch(() => undefined)));
@@ -95,16 +131,3 @@ export const multipleImages = (folder: Folder, field: string, max: number) => [
 ];
 
 export const uploadedPath = (folder: Folder, filename: string): string => `/uploads/${folder}/${filename}`;
-
-// A post may only reference images its author uploaded that still exist on disk.
-export const isOwnedExistingUpload = async (publicPath: string, folder: Folder, userId: string): Promise<boolean> => {
-  const prefix = `/uploads/${folder}/${userId}-`;
-  if (!publicPath.startsWith(prefix)) return false;
-  const filename = path.basename(publicPath);
-  try {
-    const stat = await fs.promises.stat(path.join(UPLOADS_ROOT, folder, filename));
-    return stat.isFile();
-  } catch {
-    return false;
-  }
-};
