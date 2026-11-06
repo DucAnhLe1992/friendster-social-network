@@ -271,6 +271,19 @@ themselves, so they cannot drift or move backward. After a realtime reconnect th
 
 Messages are sent and marked read over HTTP; the socket carries live updates only.
 
+### Message cache contract (web)
+
+- Every message that reaches a thread from outside its own HTTP snapshot (socket events and reconnect catch-up
+  pages) enters the cache through one path that also records it in the `LiveBuffer`. A snapshot that was in flight
+  merges those messages back in, so an older snapshot can never erase newer messages, and each message appears once.
+- Each connection is a sync boundary. A thread that is on screen is **reconciled** (paged forward, or reloaded if
+  paging fails). A loaded thread that is not on screen is only **reset**: its stale copy is dropped and it loads
+  fresh when opened, so no request is made for it during catch-up.
+- Threads that fail for a recoverable reason (network, 5xx, 408, 429) keep their cursors and are retried with
+  backoff; `synced` stays false until all succeed. Refusals (other 4xx) are not retried.
+- Catch-up belongs to one sign-in. It is aborted on sign-out, account switch, or socket teardown, and after that it
+  makes no cache writes, resets, invalidations, retries, or sync-state changes.
+
 ### Client -> Server
 - typing_start
 - typing_stop

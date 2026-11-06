@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { FilterQuery, Types } from 'mongoose';
 import { Post, User, Comment, Notification } from '../models';
 import { createPostSchema, updatePostSchema, paginationSchema, profileTabSchema } from '../utils/validation';
-import { AUTHOR_FIELDS, withLikeStatus } from '../utils/serializers';
+import { AUTHOR_FIELDS, publicPost } from '../utils/serializers';
 import { uploadedPath } from '../middleware/upload';
 import { abortPublication, claimForPost, completePublication, deletePostMedia, recordUploads } from '../services/media';
 import { isDuplicateKey } from '../middleware/errorHandler';
@@ -21,7 +21,7 @@ const listPosts = async (req: IAuthRequest, res: Response, query: FilterQuery<IP
   const viewerId = req.user?._id.toString();
   const response: IApiResponse = {
     success: true,
-    data: { posts: posts.map((post) => withLikeStatus(post, viewerId)) },
+    data: { posts: posts.map((post) => publicPost(post, viewerId)) },
     meta: { page, limit, total, hasMore: skip + posts.length < total },
   };
   res.status(200).json(response);
@@ -58,7 +58,7 @@ export const getPost = async (req: IAuthRequest, res: Response): Promise<void> =
     res.status(404).json({ success: false, error: 'Post not found' });
     return;
   }
-  res.status(200).json({ success: true, data: { post: withLikeStatus(post, req.user?._id.toString()) } });
+  res.status(200).json({ success: true, data: { post: publicPost(post, req.user?._id.toString()) } });
 };
 
 export const uploadPostImages = async (req: IAuthRequest, res: Response): Promise<void> => {
@@ -85,11 +85,9 @@ export const createPost = async (req: IAuthRequest, res: Response): Promise<void
   // Built from the signed-in user rather than looked up again, so nothing can fail after the post commits.
   const author = { _id: user._id, handle: user.handle, displayName: user.displayName, avatar: user.avatar, isVerified: user.isVerified };
   const send = (post: IPost, status: number) => {
-    // Internal publication fields are not part of the public post shape.
-    const rest = { ...post.toObject<IPost>(), status: undefined, clientId: undefined };
     res.status(status).json({
       success: true,
-      data: { post: withLikeStatus({ ...rest, author }, user._id.toString()) },
+      data: { post: publicPost({ ...post.toObject<IPost>(), author }, user._id.toString()) },
       message: 'Post created successfully',
     });
   };
@@ -160,7 +158,7 @@ export const updatePost = async (req: IAuthRequest, res: Response): Promise<void
 
   res.status(200).json({
     success: true,
-    data: { post: withLikeStatus(post, req.user!._id.toString()) },
+    data: { post: publicPost(post, req.user!._id.toString()) },
     message: 'Post updated successfully',
   });
 };

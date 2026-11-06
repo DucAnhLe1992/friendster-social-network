@@ -39,6 +39,40 @@ export const selfUser = (user: UserLike) => ({
   email: user.email ?? '',
 });
 
+interface PostLike {
+  _id: Types.ObjectId;
+  author: unknown;
+  content: string;
+  images: string[];
+  likes: Types.ObjectId[];
+  commentsCount: number;
+  sharesCount: number;
+  isEdited: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const publicAuthor = (author: unknown) => {
+  if (!author || typeof author !== 'object' || !('handle' in author)) return author;
+  const a = author as UserLike;
+  return { _id: a._id, handle: a.handle, displayName: a.displayName, avatar: a.avatar ?? '', isVerified: a.isVerified ?? false };
+};
+
+/** The only shape a post leaves the API in; internal fields such as publication status never reach clients. */
+export const publicPost = (post: PostLike, viewerId?: string) => ({
+  _id: post._id,
+  author: publicAuthor(post.author),
+  content: post.content,
+  images: post.images,
+  likeCount: post.likes.length,
+  isLiked: viewerId ? post.likes.some((id) => id.toString() === viewerId) : false,
+  commentsCount: post.commentsCount,
+  sharesCount: post.sharesCount,
+  isEdited: post.isEdited,
+  createdAt: post.createdAt,
+  updatedAt: post.updatedAt,
+});
+
 export const withLikeStatus = <T extends { likes: Types.ObjectId[] }>(item: T, viewerId?: string) => {
   const { likes, ...rest } = item;
   return {

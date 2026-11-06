@@ -4,9 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '@/types';
 
 const getMessages = vi.fn();
-vi.mock('@/lib/api', () => ({ apiClient: { getMessages: (...args: unknown[]) => getMessages(...args) } }));
+vi.mock('@/lib/api', () => ({
+  apiClient: { getMessages: (...args: unknown[]) => getMessages(...args) },
+  isStaleSessionError: () => false,
+}));
 
-const { applyLiveMessage, catchUp, LiveBuffer, mergeCursors, mergeMessages, snapshotCursors } =
+const { applyLiveMessage, catchUp, LiveBuffer, mergeCursors, mergeMessages, snapshotCursors, SyncCancelledError } =
   await import('@/lib/messageSync');
 const { newClientId } = await import('@/lib/utils');
 
@@ -41,6 +44,8 @@ const mountThread = (qc: QueryClient, buffer: InstanceType<typeof LiveBuffer>, l
 };
 
 const ids = (qc: QueryClient) => qc.getQueryData<Message[]>(['messages', 'c1'])?.map((m) => m._id);
+
+const live = () => new AbortController().signal;
 
 describe('mergeMessages', () => {
   it('drops duplicates and orders by time, then by id', () => {
@@ -118,11 +123,11 @@ describe('catchUp', () => {
       .mockResolvedValueOnce(page([msg('b', 2)], true))
       .mockResolvedValueOnce(page([msg('c', 3)]));
 
-    const failed = await catchUp(qc, new Map([['c1', 'a']]));
+    const failed = await catchUp(qc, new LiveBuffer(), new Map([['c1', 'a']]), live());
 
     expect(failed.size).toBe(0);
-    expect(getMessages).toHaveBeenNthCalledWith(1, 'c1', { after: 'a' });
-    expect(getMessages).toHaveBeenNthCalledWith(2, 'c1', { after: 'b' });
+    expect(getMessages).toHaveBeenNthCalledWith(1, 'c1', { after: 'a' }, expect.any(AbortSignal));
+    expect(getMessages).toHaveBeenNthCalledWith(2, 'c1', { after: 'b' }, expect.any(AbortSignal));
     expect(ids(qc)).toEqual(['a', 'b', 'c']);
   });
 
@@ -133,7 +138,7 @@ describe('catchUp', () => {
     const { unsubscribe } = mountThread(qc, buffer, async () => (calls++ === 0 ? [] : [msg('first', 5)]));
     await vi.waitFor(() => expect(ids(qc)).toEqual([]));
 
-    const failed = await catchUp(qc, new Map([['c1', null]]));
+    const failed = await catchUp(qc, buffer, new Map([['c1', null]]), live());
 
     expect(failed.size).toBe(0);
     expect(getMessages).not.toHaveBeenCalled();
@@ -150,7 +155,7 @@ describe('catchUp', () => {
     const { unsubscribe } = mountThread(qc, new LiveBuffer(), offline);
     getMessages.mockImplementation(offline);
 
-    const failed = await catchUp(qc, new Map([['c1', 'a']]));
+    const failed = await catchUp(qc, new LiveBuffer(), new Map([['c1', 'a']]), live());
 
     expect(failed).toEqual(new Map([['c1', 'a']]));
     unsubscribe();
@@ -165,7 +170,74 @@ describe('catchUp', () => {
     const { unsubscribe } = mountThread(qc, new LiveBuffer(), gone);
     getMessages.mockImplementation(gone);
 
-    expect((await catchUp(qc, new Map([['c1', 'a']]))).size).toBe(0);
+    expect((await catchUp(qc, new LiveBuffer(), new Map([['c1', 'a']]), live())).size).toBe(0);
+    unsubscribe();
+  });
+
+  it('keeps recovered messages when an older snapshot finishes afterwards', async () => {
+    const qc = client();
+    const buffer = new LiveBuffer();
+    qc.setQueryData(['messages', 'c1'], [msg('A', 1)]);
+    const snapshot = deferred<Message[]>();
+    const { observer, unsubscribe } = mountThread(qc, buffer, () => snapshot.promise);
+    const refetch = observer.refetch();
+    getMessages.mockResolvedValueOnce(page([msg('B', 2)]));
+
+    const failed = await catchUp(qc, buffer, new Map([['c1', 'A']]), live());
+    expect(failed.size).toBe(0);
+    snapshot.resolve([msg('A', 1)]);
+    await refetch;
+
+    expect(ids(qc)).toEqual(['A', 'B']);
+    unsubscribe();
+  });
+
+  it('keeps recovered and live messages when an older snapshot finishes afterwards', async () => {
+    const qc = client();
+    const buffer = new LiveBuffer();
+    qc.setQueryData(['messages', 'c1'], [msg('A', 1)]);
+    const snapshot = deferred<Message[]>();
+    const { observer, unsubscribe } = mountThread(qc, buffer, () => snapshot.promise);
+    const refetch = observer.refetch();
+    const recovered = deferred<ReturnType<typeof page>>();
+    getMessages.mockReturnValueOnce(recovered.promise);
+
+    const recovery = catchUp(qc, buffer, new Map([['c1', 'A']]), live());
+    applyLiveMessage(qc, buffer, 'c1', msg('C', 3));
+    recovered.resolve(page([msg('B', 2), msg('C', 3)]));
+    expect((await recovery).size).toBe(0);
+    snapshot.resolve([msg('A', 1)]);
+    await refetch;
+
+    expect(ids(qc)).toEqual(['A', 'B', 'C']);
+    unsubscribe();
+  });
+
+  it('touches nothing once its session has ended', async () => {
+    const qc = client();
+    const controller = new AbortController();
+    qc.setQueryData(['messages', 'c1'], [msg('A', 1)]);
+    let rejectRequest!: (error: Error) => void;
+    getMessages.mockReturnValueOnce(new Promise((_, reject) => (rejectRequest = reject)));
+    const recovery = catchUp(qc, new LiveBuffer(), new Map([['c1', 'A']]), controller.signal);
+
+    controller.abort();
+    qc.clear();
+    let loads = 0;
+    const { unsubscribe } = mountThread(qc, new LiveBuffer(), async () => {
+      loads++;
+      return [msg('next-session', 9)];
+    });
+    await vi.waitFor(() => expect(ids(qc)).toEqual(['next-session']));
+    const invalidate = vi.spyOn(qc, 'invalidateQueries');
+    const reset = vi.spyOn(qc, 'resetQueries');
+    rejectRequest(new Error('offline'));
+
+    await expect(recovery).rejects.toBeInstanceOf(SyncCancelledError);
+    expect(loads).toBe(1);
+    expect(reset).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(ids(qc)).toEqual(['next-session']);
     unsubscribe();
   });
 });

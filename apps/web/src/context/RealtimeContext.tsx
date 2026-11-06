@@ -62,6 +62,13 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
     if (!accessToken) return;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
+    // Recovery belongs to this sign-in: it stops the moment the effect is torn down or the session changes, even
+    // before React re-runs the effect, so it can never write into the next account's cache.
+    const recovery = new AbortController();
+    const generation = useAuthStore.getState().generation;
+    const unsubscribe = useAuthStore.subscribe((s) => {
+      if (s.generation !== generation) recovery.abort();
+    });
 
     // Keep the earliest cursor of an outage: live messages that arrive first must not hide the gap behind them.
     const markGap = () => {
@@ -93,26 +100,30 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
     // Every connection, including the first, is a sync boundary: messages sent between a thread's HTTP load and the
     // socket subscribing would otherwise never arrive. Cursors are kept, and retried, until every thread reconciles.
     const sync = () => {
+      if (recovery.signal.aborted) return;
       const previous = gap.current;
       const outage = previous && previous.userId === myId ? previous.cursors : undefined;
       const pending = { userId: myId, cursors: mergeCursors(snapshotCursors(queryClient), outage) };
       gap.current = pending;
       setSynced(false);
-      catchUp(queryClient, pending.cursors).then((failed) => {
-        // A drop during catch-up keeps these cursors as the gap for the next connection.
-        if (gap.current !== pending || !next.connected) return;
-        if (failed.size === 0) {
-          gap.current = null;
-          attempt = 0;
-          setSynced(true);
-          return;
-        }
-        gap.current = { userId: myId, cursors: failed };
-        const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** attempt++);
-        retryTimer = setTimeout(() => {
-          if (next.connected) sync();
-        }, delay);
-      });
+      catchUp(queryClient, liveBuffer, pending.cursors, recovery.signal).then(
+        (failed) => {
+          // A drop during catch-up keeps these cursors as the gap for the next connection.
+          if (recovery.signal.aborted || gap.current !== pending || !next.connected) return;
+          if (failed.size === 0) {
+            gap.current = null;
+            attempt = 0;
+            setSynced(true);
+            return;
+          }
+          gap.current = { userId: myId, cursors: failed };
+          const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** attempt++);
+          retryTimer = setTimeout(() => {
+            if (next.connected) sync();
+          }, delay);
+        },
+        () => undefined
+      );
     };
 
     next.on('connect', () => {
@@ -133,6 +144,8 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
         });
     });
     return () => {
+      recovery.abort();
+      unsubscribe();
       markGap();
       next.disconnect();
       setSocket(null);

@@ -257,4 +257,36 @@ describe('posts and uploads', () => {
     await request(app).get(image).expect(200);
     await removeUpload(image);
   });
+
+  it('returns the same public post shape from every route', async () => {
+    const alice = await registerUser('alice');
+    const clientId = '0b5c3f0e-2f1a-4c4e-9a54-0f6d2f3b7e11';
+    const body = { content: 'shape check #shape', clientId };
+    const created = await request(app).post('/api/posts').set(auth(alice)).send(body).expect(201);
+    const id = created.body.data.post._id;
+
+    const postKeys = [
+      '_id', 'author', 'commentsCount', 'content', 'createdAt', 'images', 'isEdited', 'isLiked', 'likeCount',
+      'sharesCount', 'updatedAt',
+    ];
+    const authorKeys = ['_id', 'avatar', 'displayName', 'handle', 'isVerified'];
+    const check = (post: Record<string, unknown>) => {
+      expect(Object.keys(post).sort()).toEqual(postKeys);
+      expect(Object.keys(post.author as object).sort()).toEqual(authorKeys);
+    };
+
+    const replay = await request(app).post('/api/posts').set(auth(alice)).send(body).expect(200);
+    const detail = await request(app).get(`/api/posts/${id}`).set(auth(alice)).expect(200);
+    const feed = await request(app).get('/api/posts/feed').set(auth(alice)).expect(200);
+    const search = await request(app).get('/api/posts/search').query({ q: 'shape' }).set(auth(alice)).expect(200);
+    const updated = await request(app).put(`/api/posts/${id}`).set(auth(alice)).send({ content: 'edited' }).expect(200);
+
+    for (const post of [created.body.data.post, replay.body.data.post, detail.body.data.post, updated.body.data.post]) {
+      check(post);
+    }
+    for (const list of [feed.body.data.posts, search.body.data.posts]) {
+      expect(list).toHaveLength(1);
+      check(list[0]);
+    }
+  });
 });
