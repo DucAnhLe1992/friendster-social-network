@@ -12,7 +12,7 @@ import { useRealtime } from '@/context/RealtimeContext';
 import { apiClient } from '@/lib/api';
 import type { Message } from '@/types';
 import { notifyError } from '@/lib/errors';
-import { mergeMessages } from '@/lib/messageSync';
+import { applyLiveMessage, mergeMessages } from '@/lib/messageSync';
 import { newClientId } from '@/lib/utils';
 
 const MAX = 1000;
@@ -147,7 +147,8 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
       if (pendingClientId.current?.content !== content) pendingClientId.current = { content, id: newClientId() };
       const message = await apiClient.sendMessage(conversationId, content, pendingClientId.current.id);
       pendingClientId.current = null;
-      queryClient.setQueryData<Message[]>(messagesKey, (old = []) => mergeMessages(old, [message]) ?? old);
+      // Goes through the shared path so a thread load already in flight cannot drop the sent message.
+      applyLiveMessage(queryClient, liveBuffer, conversationId, message);
       if (draftRevision.current === revision) setDraft('');
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     } catch (error) {
