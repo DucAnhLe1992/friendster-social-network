@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format, formatDistanceToNowStrict } from 'date-fns';
 import { MapPin, Link as LinkIcon, CalendarDays, BadgeCheck, Mail, UserX, FileText, Image, Heart, MessageSquare, Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import PageHeader from '@/components/custom/PageHeader';
@@ -15,8 +14,9 @@ import RichText from '@/components/custom/RichText';
 import EditProfileDialog from '@/components/custom/EditProfileDialog';
 import ConnectionsDialog, { type ConnectionKind } from '@/components/custom/ConnectionsDialog';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage, mediaUrl, type ProfileTab } from '@/lib/api';
+import { apiClient, mediaUrl, type ProfileTab } from '@/lib/api';
 import type { User } from '@/types';
+import { notifyError } from '@/lib/errors';
 
 type Tab = ProfileTab | 'replies';
 
@@ -50,7 +50,7 @@ const Profile = () => {
       const conversation = await apiClient.startConversation(handle);
       navigate(`/messages/${conversation._id}`);
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not open a conversation'));
+      notifyError(error, 'Could not open a conversation');
     } finally {
       setStartingChat(false);
     }

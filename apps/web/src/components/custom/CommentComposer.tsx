@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import UserAvatar from '@/components/custom/UserAvatar';
 import { useAuthStore } from '@/store/authStore';
-import { getErrorMessage } from '@/lib/api';
+import { notifyError } from '@/lib/errors';
 
 const MAX = 280;
 
@@ -33,7 +32,7 @@ const CommentComposer = ({ placeholder, onSubmit, onCancel, initialValue = '', a
       await onSubmit(trimmed);
       setValue('');
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not post your reply'));
+      notifyError(error, 'Could not post your reply');
     } finally {
       setSending(false);
     }

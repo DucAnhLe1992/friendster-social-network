@@ -33,14 +33,22 @@ export const deletePostMedia = async (postId: Types.ObjectId, paths: string[]): 
   );
 };
 
-/** Deletes uploads that were never attached to a post within `maxAgeMs`. */
+/** Deletes uploads never attached to a post, or claimed by a post that was never saved, within `maxAgeMs`. */
 export const sweepAbandonedUploads = async (maxAgeMs: number): Promise<number> => {
-  const stale = await Media.find({ post: null, createdAt: { $lt: new Date(Date.now() - maxAgeMs) } })
-    .select('path')
-    .lean();
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const unclaimed = await Media.find({ post: null, createdAt: { $lt: cutoff } }).select('path post').lean();
+  // A crash between claiming and creating the post leaves a claim pointing at nothing.
+  const orphaned = await Media.aggregate<{ _id: Types.ObjectId; path: string; post: Types.ObjectId }>([
+    { $match: { post: { $ne: null }, createdAt: { $lt: cutoff } } },
+    { $lookup: { from: Post.collection.name, localField: 'post', foreignField: '_id', as: 'owner' } },
+    { $match: { owner: { $size: 0 } } },
+    { $project: { path: 1, post: 1 } },
+  ]);
+
   let count = 0;
-  for (const { _id, path } of stale) {
-    const removed = await Media.deleteOne({ _id, post: null });
+  for (const { _id, path, post } of [...unclaimed, ...orphaned]) {
+    if (post && (await Post.exists({ _id: post }))) continue;
+    const removed = await Media.deleteOne({ _id, post });
     if (!removed.deletedCount) continue;
     await removeUpload(path);
     count += 1;

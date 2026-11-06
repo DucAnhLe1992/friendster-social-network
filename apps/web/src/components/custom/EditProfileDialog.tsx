@@ -10,8 +10,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import UserAvatar from '@/components/custom/UserAvatar';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage, mediaUrl } from '@/lib/api';
+import { apiClient, mediaUrl } from '@/lib/api';
 import type { User } from '@/types';
+import { notifyError } from '@/lib/errors';
 
 const ACCEPT = 'image/jpeg,image/png,image/webp,image/gif';
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -80,7 +81,7 @@ const EditProfileDialog = ({ open, onOpenChange, user }: EditProfileDialogProps)
       toast.success('Profile updated');
       onOpenChange(false);
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not save your profile'));
+      notifyError(error, 'Could not save your profile');
     } finally {
       setSaving(false);
     }

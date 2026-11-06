@@ -2,7 +2,6 @@ import { useNavigate } from 'react-router-dom';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { Heart, MessageCircle, Reply, UserPlus, AtSign, CheckCheck, Bell, X, Loader2 } from 'lucide-react';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import PageHeader from '@/components/custom/PageHeader';
@@ -11,6 +10,7 @@ import EmptyState from '@/components/custom/EmptyState';
 import { FeedSkeleton } from '@/components/custom/PostFeed';
 import { apiClient, getErrorMessage, mediaUrl } from '@/lib/api';
 import type { Notification, NotificationType } from '@/types';
+import { notifyError } from '@/lib/errors';
 
 const TYPE_META: Record<NotificationType, { icon: typeof Heart; color: string; text: string }> = {
   like: { icon: Heart, color: 'text-rose-500 bg-rose-500/10', text: 'liked your post' },
@@ -44,7 +44,7 @@ const Notifications = () => {
       await apiClient.markAllNotificationsAsRead();
       refresh();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not mark notifications as read'));
+      notifyError(error, 'Could not mark notifications as read');
     }
   };
 
@@ -58,7 +58,7 @@ const Notifications = () => {
       await apiClient.deleteNotification(id);
       refresh();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not remove notification'));
+      notifyError(error, 'Could not remove notification');
     }
   };
 

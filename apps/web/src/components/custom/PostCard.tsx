@@ -18,8 +18,9 @@ import RichText from '@/components/custom/RichText';
 import EditTextDialog from '@/components/custom/EditTextDialog';
 import ConfirmDialog from '@/components/custom/ConfirmDialog';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage, mediaUrl } from '@/lib/api';
+import { apiClient, mediaUrl } from '@/lib/api';
 import type { Post } from '@/types';
+import { notifyError } from '@/lib/errors';
 
 interface PostCardProps {
   post: Post;
@@ -65,7 +66,7 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
     } catch (error) {
       setIsLiked(!next);
       setLikeCount((c) => c + (next ? -1 : 1));
-      toast.error(getErrorMessage(error, 'Could not update like'));
+      notifyError(error, 'Could not update like');
     } finally {
       setLiking(false);
     }
@@ -80,7 +81,7 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
       queryClient.invalidateQueries({ queryKey: ['posts'] });
       toast.success('Post updated');
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not update post'));
+      notifyError(error, 'Could not update post');
       throw error;
     }
   };
@@ -94,7 +95,7 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
       queryClient.invalidateQueries({ queryKey: ['user', post.author.handle] });
       onDeleted?.();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not delete post'));
+      notifyError(error, 'Could not delete post');
     }
   };
 

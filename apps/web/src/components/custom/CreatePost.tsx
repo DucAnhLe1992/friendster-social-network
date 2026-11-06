@@ -6,7 +6,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import UserAvatar from '@/components/custom/UserAvatar';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage } from '@/lib/api';
+import { apiClient } from '@/lib/api';
+import { notifyError } from '@/lib/errors';
 
 const MAX_CHARS = 280;
 const MAX_IMAGES = 4;
@@ -88,7 +89,7 @@ const CreatePost = ({ onSuccess, autoFocus }: { onSuccess?: () => void; autoFocu
       toast.success('Posted');
       onSuccess?.();
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not publish your post'));
+      notifyError(error, 'Could not publish your post');
     } finally {
       setSubmitting(false);
     }

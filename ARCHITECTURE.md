@@ -17,12 +17,12 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 - **HTTP Client**: Axios
 
 ### Backend
-- **Runtime**: Node.js 20+
+- **Runtime**: Node.js 22.12+
 - **Framework**: Express.js with TypeScript
 - **Database**: MongoDB with Mongoose ODM
 - **Authentication**: JWT (access + refresh tokens)
 - **Real-time**: Socket.io
-- **File Upload**: Multer + Cloudinary (or local storage)
+- **File Upload**: Multer to local disk; every image is decoded and re-encoded with sharp (unused decoders blocked)
 - **Validation**: Zod
 - **Security**: Helmet, CORS, Rate Limiting
 
@@ -30,7 +30,7 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 - **Containerization**: Docker + Docker Compose
 - **CI/CD**: GitHub Actions
 - **Testing**: Vitest + Supertest API integration tests (no frontend test suite yet)
-- **Code Quality**: ESLint, Prettier, Husky
+- **Code Quality**: ESLint and TypeScript type checks (enforced in CI), production dependency audit
 
 ## Project Structure
 
@@ -39,13 +39,12 @@ friendster-modern/
 ├── apps/
 │   ├── web/                 # React frontend
 │   └── api/                 # Express backend
-├── packages/
-│   ├── shared/              # Shared types and utilities
-│   └── config/              # Shared config (eslint, tsconfig)
 ├── docker/
 │   ├── Dockerfile.web
 │   ├── Dockerfile.api
-│   └── docker-compose.yml
+│   └── nginx.conf
+├── docker-compose.yml
+├── docker-compose.dev.yml
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml
@@ -62,7 +61,7 @@ friendster-modern/
 
 ### Posts (formerly "Screams")
 - Create, read, update, delete posts
-- Rich text support (markdown)
+- Hashtag and mention highlighting
 - Image attachments
 - Like/unlike functionality
 
@@ -86,28 +85,24 @@ friendster-modern/
 
 ## Additional Features
 
-### Stories
-- 24-hour disappearing stories
-- Image/video stories
-- View tracking
-
 ### Direct Messaging
-- Real-time private messaging
-- Message read receipts
-- Typing indicators
+- Real-time one-to-one messaging
+- Unread counts derived from message read state; reads are marked up to the last message the reader saw
+- Typing indicators (rate-limited per connection)
 
-### Feed Algorithm
-- Engagement-based sorting
-- Trending posts
+### Feed
+- Chronological feed of followed accounts
+- Trending hashtags
 
 ### Search
-- Full-text search for posts and users
-- Filter by tags, date
+- Text search for posts and users
 
-### Admin Dashboard
-- User management
-- Content moderation
-- Analytics
+## Planned (not implemented)
+
+- Stories (a data model exists, but there are no routes or UI)
+- Engagement-based feed ranking
+- Admin dashboard and content moderation
+- Frontend and browser end-to-end tests
 
 ## Database Schema
 
@@ -261,27 +256,19 @@ friendster-modern/
 - POST /api/conversations
 - POST /api/conversations/:id/messages
 
-### Stories
-- GET /api/stories
-- POST /api/stories
-- DELETE /api/stories/:id
-
 ## Real-time Events (Socket.io)
 
+Messages are sent and marked read over HTTP; the socket carries live updates only.
+
 ### Client -> Server
-- join_conversation
-- leave_conversation
-- send_message
 - typing_start
 - typing_stop
-- mark_read
 
 ### Server -> Client
 - new_message
 - user_typing
-- message_read
+- conversation_read
 - new_notification
-- new_story
 
 ## Security Considerations
 
@@ -291,18 +278,17 @@ friendster-modern/
 4. **CORS**: Restricted to known origins
 5. **Helmet**: Security headers
 6. **Input Validation**: Zod schemas for all inputs
-7. **File Upload**: Size limits, type validation, virus scanning (ClamAV)
+7. **File Upload**: Size and per-account rate limits, signature check, full decode and re-encode, pixel limits, bounded decode concurrency
 8. **MongoDB**: Parameterized queries via Mongoose (prevents injection)
 
 ## Performance Optimizations
 
 1. **Database Indexes**: On frequently queried fields
-2. **Pagination**: Cursor-based for feeds
-3. **Caching**: Redis for hot data
-4. **Image Optimization**: WebP format, responsive sizes
-5. **Lazy Loading**: Images and components
-6. **Code Splitting**: Route-based splitting
-7. **CDN**: Static assets served via CDN
+2. **Pagination**: Page-based for feeds, cursor-based (timestamp + id) for messages
+3. **Image Processing**: Uploads are resized to at most 4096 px and stripped of metadata
+4. **Code Splitting**: Route-based lazy loading plus separate vendor chunks
+
+Possible future work: Redis caching, a CDN, and a Socket.io Redis adapter for running several API instances.
 
 ## Deployment Strategy
 
@@ -312,23 +298,16 @@ docker-compose up
 ```
 
 ### Production
-- Frontend: Vercel/Netlify
-- Backend: Railway/Render/DigitalOcean
-- Database: MongoDB Atlas
-- File Storage: Cloudinary/AWS S3
-- Real-time: Socket.io with Redis adapter
+`docker compose up -d` runs MongoDB (not exposed to the host), the API, and nginx serving the web app and
+proxying `/api`, `/socket.io` and `/uploads`. Uploaded files live in a Docker volume.
 
 ## CI/CD Pipeline
 
-### On Pull Request
-- Lint check
-- Type check
-- Unit tests
-- Build verification
+### CI (pushes and pull requests to main/develop)
+- Production dependency audit (fails on high severity)
+- API: type check, lint, integration tests, build
+- Web: lint, type check, build
+- Docker: build images and smoke-test the running stack
 
-### On Merge to Main
-- Run tests
-- Build Docker images
-- Deploy to staging
-- Run E2E tests
-- Deploy to production
+### CD (opt-in)
+- Publishes Docker images tagged with the commit SHA after CI passes; it does not deploy a server

@@ -2,6 +2,7 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { app, auth, PNG_BYTES, registerUser } from './helpers';
 import { removeUpload } from '../src/middleware/upload';
+import { Types } from 'mongoose';
 import { Media } from '../src/models';
 import { sweepAbandonedUploads } from '../src/services/media';
 
@@ -110,5 +111,26 @@ describe('posts and uploads', () => {
     await request(app).get(abandoned).expect(404);
     await request(app).get(kept).expect(200);
     await removeUpload(kept);
+  });
+
+  it('recovers images claimed by a post that was never saved', async () => {
+    const alice = await registerUser('alice');
+    const image = await uploadPixel(alice);
+    const old = new Date(Date.now() - 2 * 86_400_000);
+    await Media.collection.updateOne({ path: image }, { $set: { post: new Types.ObjectId(), createdAt: old } });
+
+    expect(await sweepAbandonedUploads(86_400_000)).toBe(1);
+    await request(app).get(image).expect(404);
+  });
+
+  it('never sweeps images that belong to a saved post', async () => {
+    const alice = await registerUser('alice');
+    const image = await uploadPixel(alice);
+    await request(app).post('/api/posts').set(auth(alice)).send({ images: [image] }).expect(201);
+    await Media.collection.updateOne({ path: image }, { $set: { createdAt: new Date(Date.now() - 2 * 86_400_000) } });
+
+    expect(await sweepAbandonedUploads(86_400_000)).toBe(0);
+    await request(app).get(image).expect(200);
+    await removeUpload(image);
   });
 });

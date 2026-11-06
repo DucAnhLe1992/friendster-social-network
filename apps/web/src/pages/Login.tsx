@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage } from '@/lib/api';
+import { apiClient } from '@/lib/api';
+import { notifyError } from '@/lib/errors';
 
 const Login = () => {
   const navigate = useNavigate();
@@ -36,7 +37,7 @@ const Login = () => {
       toast.success('Welcome back!');
       navigate('/');
     } catch (error) {
-      toast.error(getErrorMessage(error));
+      notifyError(error);
     } finally {
       setIsLoading(false);
     }

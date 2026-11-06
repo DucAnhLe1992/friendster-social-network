@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Search, Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
 
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import UserAvatar from '@/components/custom/UserAvatar';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage } from '@/lib/api';
+import { apiClient } from '@/lib/api';
+import { notifyError } from '@/lib/errors';
 
 const NewMessageDialog = ({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) => {
   const navigate = useNavigate();
@@ -37,7 +37,7 @@ const NewMessageDialog = ({ open, onOpenChange }: { open: boolean; onOpenChange:
       onOpenChange(false);
       navigate(`/messages/${conversation._id}`);
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not start a conversation'));
+      notifyError(error, 'Could not start a conversation');
     } finally {
       setOpening(null);
     }
