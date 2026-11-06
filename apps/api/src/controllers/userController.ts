@@ -36,7 +36,19 @@ const saveImage = (field: 'avatar' | 'coverImage', folder: 'avatars' | 'covers')
       return;
     }
 
-    const previous = await User.findByIdAndUpdate(req.user!._id, { $set: { [field]: uploadedPath(folder, req.file.filename) } });
+    const newPath = uploadedPath(folder, req.file.filename);
+    let previous;
+    try {
+      previous = await User.findByIdAndUpdate(req.user!._id, { $set: { [field]: newPath } });
+    } catch (error) {
+      await removeUpload(newPath);
+      throw error;
+    }
+    if (!previous) {
+      await removeUpload(newPath);
+      res.status(404).json({ success: false, error: 'User not found' });
+      return;
+    }
     await removeUpload(previous?.[field]);
     const user = await User.findById(req.user!._id);
     res.status(200).json({ success: true, data: { user: selfUser(user!) } });

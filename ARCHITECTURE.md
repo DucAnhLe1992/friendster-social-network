@@ -29,7 +29,7 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 ### DevOps & Infrastructure
 - **Containerization**: Docker + Docker Compose
 - **CI/CD**: GitHub Actions
-- **Testing**: Vitest + Supertest API integration tests (no frontend test suite yet)
+- **Testing**: Vitest + Supertest API integration tests and focused frontend tests; browser end-to-end tests are not yet implemented
 - **Code Quality**: ESLint and TypeScript type checks (enforced in CI), production dependency audit
 
 ## Project Structure

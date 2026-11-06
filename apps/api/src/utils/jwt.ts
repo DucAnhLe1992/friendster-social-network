@@ -4,8 +4,13 @@ import { ITokens, ITokenPayload } from '../types';
 
 type Expiry = NonNullable<SignOptions['expiresIn']>;
 
-export const generateTokens = (payload: ITokenPayload, sessionId: string): ITokens => {
-  const claims = { userId: payload.userId, handle: payload.handle, role: payload.role };
+export const generateTokens = (payload: ITokenPayload, sessionId: string, issuedAt?: number): ITokens => {
+  const claims = {
+    userId: payload.userId,
+    handle: payload.handle,
+    role: payload.role,
+    ...(issuedAt !== undefined && { iat: issuedAt }),
+  };
 
   const accessToken = jwt.sign(claims, env.JWT_ACCESS_SECRET, {
     expiresIn: env.JWT_ACCESS_EXPIRY as Expiry,

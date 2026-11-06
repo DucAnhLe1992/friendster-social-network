@@ -7,6 +7,8 @@ export interface IRefreshSession {
   family: string;
   expiresAt: Date;
   rotatedAt: Date | null;
+  issuedAt?: number;
+  successorJti?: string;
 }
 
 const refreshSessionSchema = new Schema<IRefreshSession>(
@@ -17,6 +19,8 @@ const refreshSessionSchema = new Schema<IRefreshSession>(
     family: { type: String, required: true, index: true },
     expiresAt: { type: Date, required: true },
     rotatedAt: { type: Date, default: null },
+    issuedAt: { type: Number },
+    successorJti: { type: String },
   },
   { timestamps: true }
 );

@@ -1,7 +1,9 @@
+import fs from 'fs/promises';
+import path from 'path';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { app, auth, PNG_BYTES, registerUser } from './helpers';
-import { removeUpload } from '../src/middleware/upload';
+import { removeUpload, UPLOADS_ROOT } from '../src/middleware/upload';
 import { Types } from 'mongoose';
 import { Media, Post } from '../src/models';
 import { attachClaims, claimForPost, sweepAbandonedUploads } from '../src/services/media';
@@ -40,6 +42,25 @@ describe('posts and uploads', () => {
       .set(auth(alice))
       .attach('images', Buffer.from('definitely not an image'), { filename: 'fake.png', contentType: 'image/png' });
     expect(res.status).toBe(400);
+  });
+
+  it('removes uploaded files when recording their ownership fails', async () => {
+    const alice = await registerUser('alice');
+    const directory = path.join(UPLOADS_ROOT, 'posts');
+    const before = await fs.readdir(directory);
+    const insertMany = vi.spyOn(Media, 'insertMany').mockRejectedValueOnce(new Error('database unavailable'));
+
+    try {
+      const response = await request(app)
+        .post('/api/posts/images')
+        .set(auth(alice))
+        .attach('images', PNG_BYTES, { filename: 'pixel.png', contentType: 'image/png' });
+      expect(response.status).toBe(500);
+    } finally {
+      insertMany.mockRestore();
+    }
+
+    expect(await fs.readdir(directory)).toEqual(before);
   });
 
   it("rejects missing images and other people's uploads", async () => {
