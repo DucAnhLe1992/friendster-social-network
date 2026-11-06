@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { app, auth, PNG_BYTES, registerUser } from './helpers';
 import { removeUpload } from '../src/middleware/upload';
 import { Types } from 'mongoose';
-import { Media } from '../src/models';
-import { sweepAbandonedUploads } from '../src/services/media';
+import { Media, Post } from '../src/models';
+import { attachClaims, claimForPost, sweepAbandonedUploads } from '../src/services/media';
 
 const uploadPixel = async (user: Parameters<typeof auth>[0]) => {
   const res = await request(app)
@@ -117,10 +117,55 @@ describe('posts and uploads', () => {
     const alice = await registerUser('alice');
     const image = await uploadPixel(alice);
     const old = new Date(Date.now() - 2 * 86_400_000);
-    await Media.collection.updateOne({ path: image }, { $set: { post: new Types.ObjectId(), createdAt: old } });
+    await Media.collection.updateOne(
+      { path: image },
+      { $set: { post: new Types.ObjectId(), state: 'claimed', claimedAt: old, createdAt: old } }
+    );
 
     expect(await sweepAbandonedUploads(86_400_000)).toBe(1);
     await request(app).get(image).expect(404);
+  });
+
+  it('does not treat a fresh claim on an old upload as abandoned', async () => {
+    const alice = await registerUser('alice');
+    const image = await uploadPixel(alice);
+    await Media.collection.updateOne({ path: image }, { $set: { createdAt: new Date(Date.now() - 2 * 86_400_000) } });
+    const postId = new Types.ObjectId();
+    expect(await claimForPost(postId, new Types.ObjectId(alice.id), [image])).toBe(true);
+
+    // Sweep runs while the post is still being saved.
+    expect(await sweepAbandonedUploads(86_400_000)).toBe(0);
+    await Post.create({ _id: postId, author: alice.id, images: [image] });
+    expect(await attachClaims(postId, 1)).toBe(true);
+    await request(app).get(image).expect(200);
+    await removeUpload(image);
+  });
+
+  it('never lets cleanup and publishing both win the same image', async () => {
+    const alice = await registerUser('alice');
+    const owner = new Types.ObjectId(alice.id);
+    const expire = (path: string) =>
+      Media.collection.updateOne({ path }, { $set: { claimedAt: new Date(Date.now() - 3_600_000) } });
+
+    // Post saved before the sweep looks: the sweep finalizes it instead of deleting.
+    const saved = await uploadPixel(alice);
+    const savedPost = new Types.ObjectId();
+    await claimForPost(savedPost, owner, [saved]);
+    await expire(saved);
+    await Post.create({ _id: savedPost, author: alice.id, images: [saved] });
+    expect(await sweepAbandonedUploads(86_400_000)).toBe(0);
+    expect(await attachClaims(savedPost, 1)).toBe(true);
+    await request(app).get(saved).expect(200);
+
+    // Sweep removes an expired claim first: publishing must then fail instead of reporting success.
+    const lost = await uploadPixel(alice);
+    const lostPost = new Types.ObjectId();
+    await claimForPost(lostPost, owner, [lost]);
+    await expire(lost);
+    expect(await sweepAbandonedUploads(86_400_000)).toBe(1);
+    await Post.create({ _id: lostPost, author: alice.id, images: [lost] });
+    expect(await attachClaims(lostPost, 1)).toBe(false);
+    await removeUpload(saved);
   });
 
   it('never sweeps images that belong to a saved post', async () => {

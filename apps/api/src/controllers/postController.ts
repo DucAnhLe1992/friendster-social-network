@@ -4,7 +4,7 @@ import { Post, User, Comment, Notification } from '../models';
 import { createPostSchema, updatePostSchema, paginationSchema, profileTabSchema } from '../utils/validation';
 import { AUTHOR_FIELDS, withLikeStatus } from '../utils/serializers';
 import { uploadedPath } from '../middleware/upload';
-import { claimForPost, deletePostMedia, recordUploads, releaseClaims } from '../services/media';
+import { attachClaims, claimForPost, deletePostMedia, recordUploads, releaseClaims } from '../services/media';
 import { notify } from '../services/notifications';
 import { IApiResponse, IAuthRequest, IPost } from '../types';
 
@@ -74,8 +74,10 @@ export const uploadPostImages = async (req: IAuthRequest, res: Response): Promis
 export const createPost = async (req: IAuthRequest, res: Response): Promise<void> => {
   const data = createPostSchema.parse(req.body);
   const postId = new Types.ObjectId();
-  if (!(await claimForPost(postId, req.user!._id, data.images))) {
+  const invalidImages = () =>
     res.status(400).json({ success: false, error: 'One or more images are invalid. Please upload them again.' });
+  if (!(await claimForPost(postId, req.user!._id, data.images))) {
+    invalidImages();
     return;
   }
 
@@ -85,6 +87,13 @@ export const createPost = async (req: IAuthRequest, res: Response): Promise<void
   } catch (error) {
     await releaseClaims(postId);
     throw error;
+  }
+  if (!(await attachClaims(postId, data.images.length))) {
+    // A claim expired before the post was finalized; never report success for a post whose images may be gone.
+    await Post.deleteOne({ _id: postId });
+    await releaseClaims(postId);
+    invalidImages();
+    return;
   }
   await post.populate('author', AUTHOR_FIELDS);
 

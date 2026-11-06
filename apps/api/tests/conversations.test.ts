@@ -2,7 +2,7 @@ import request from 'supertest';
 import mongoose from 'mongoose';
 import { describe, expect, it } from 'vitest';
 import { app, auth, registerUser } from './helpers';
-import { Conversation, Message } from '../src/models';
+import { Message } from '../src/models';
 
 describe('conversations', () => {
   it('resolves simultaneous starts from both participants to a single conversation', async () => {
@@ -84,16 +84,58 @@ describe('conversations', () => {
     expect(after.body.data.unreadCount).toBe(1);
   });
 
-  it('still lists a conversation if saving its latest message pointer failed', async () => {
+  it('returns the original message when a send is retried with the same ID', async () => {
     const alice = await registerUser('alice');
     await registerUser('bob');
     const start = await request(app).post('/api/conversations').set(auth(alice)).send({ handle: 'bob' });
     const id = start.body.data.conversation._id;
-    await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'hello' }).expect(201);
-    await Conversation.updateOne({ _id: id }, { $set: { lastMessage: null } });
+    const body = { content: 'only once', clientId: '3b241101-e2bb-4255-8caf-4136c566a962' };
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send(body))
+    );
+    expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+    expect(results.every((r) => r.status === 201 || r.status === 200)).toBe(true);
+    expect(new Set(results.map((r) => r.body.data.message._id)).size).toBe(1);
+    expect(await Message.countDocuments({ conversation: id, content: 'only once' })).toBe(1);
+  });
+
+  it('always shows the newest message in the list, whatever order writes finished in', async () => {
+    const alice = await registerUser('alice');
+    await registerUser('bob');
+    const start = await request(app).post('/api/conversations').set(auth(alice)).send({ handle: 'bob' });
+    const id = start.body.data.conversation._id;
+    await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'newer' }).expect(201);
+    // An older message whose write lands last must not take over the summary.
+    await Message.create({ conversation: id, sender: alice.id, content: 'older', createdAt: new Date(Date.now() - 60_000) });
 
     const list = await request(app).get('/api/conversations').set(auth(alice));
     expect(list.body.data.conversations).toHaveLength(1);
-    expect(list.body.data.conversations[0].lastMessage.content).toBe('hello');
+    expect(list.body.data.conversations[0].lastMessage.content).toBe('newer');
+  });
+
+  it('pages forward from a cursor so a reconnecting client can fill a gap in order', async () => {
+    const alice = await registerUser('alice');
+    await registerUser('bob');
+    const start = await request(app).post('/api/conversations').set(auth(alice)).send({ handle: 'bob' });
+    const id = start.body.data.conversation._id;
+    const seen = await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'seen' });
+
+    const createdAt = new Date(Date.now() + 1000);
+    await Message.insertMany(
+      Array.from({ length: 35 }, (_, i) => ({ conversation: id, sender: alice.id, content: `missed ${i}`, createdAt }))
+    );
+
+    const caught: string[] = [];
+    let after = seen.body.data.message._id as string;
+    for (let page = 0; page < 5; page += 1) {
+      const res = await request(app).get(`/api/conversations/${id}/messages`).query({ after }).set(auth(alice)).expect(200);
+      const messages = res.body.data.messages as { _id: string }[];
+      caught.push(...messages.map((m) => m._id));
+      if (!res.body.meta.hasMore) break;
+      after = messages[messages.length - 1]._id;
+    }
+    expect(caught).toHaveLength(35);
+    expect(new Set(caught).size).toBe(35);
   });
 });

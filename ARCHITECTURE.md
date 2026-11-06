@@ -180,6 +180,7 @@ friendster-modern/
   sender: ObjectId (ref: User)
   content: string
   isRead: boolean
+  clientId?: string   // unique per sender + conversation; makes retried sends idempotent
   createdAt: Date
 }
 ```
@@ -189,12 +190,15 @@ friendster-modern/
 {
   _id: ObjectId
   participants: ObjectId[] (ref: User)
-  lastMessage: ObjectId (ref: Message)
-  unreadCount: Map<ObjectId, number>
+  pairKey: string     // unique; one direct conversation per pair
   createdAt: Date
   updatedAt: Date
 }
 ```
+
+The last message and unread counts shown in the conversation list are always computed from the messages
+themselves, so they cannot drift or move backward. After a realtime reconnect the web app pages forward
+(`?after=<id>`) from the last message it had before the outage, and only marks messages read once that gap is filled.
 
 ### Stories
 ```typescript

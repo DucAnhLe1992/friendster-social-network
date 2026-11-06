@@ -70,15 +70,23 @@ sharp.block({
   ],
 });
 
-// Decoding is CPU- and memory-heavy, so only a couple of images are processed at once across all requests.
+// Decoding is CPU- and memory-heavy, so only a couple of images are processed at once across all requests, and only
+// a bounded number may wait; beyond that the server answers "busy" instead of queueing without limit.
 const MAX_CONCURRENT_DECODES = 2;
+const MAX_WAITING_DECODES = 20;
 let activeDecodes = 0;
 const waiting: Array<() => void> = [];
 
-const withDecodeSlot = async <T>(task: () => Promise<T>): Promise<T> => {
-  if (activeDecodes >= MAX_CONCURRENT_DECODES) await new Promise<void>((resolve) => waiting.push(resolve));
-  else activeDecodes += 1;
+const overloaded = () => new HttpError(503, 'The server is busy processing images. Please try again in a moment.');
+
+const withDecodeSlot = async <T>(task: () => Promise<T>, isCancelled: () => boolean): Promise<T | undefined> => {
+  if (activeDecodes >= MAX_CONCURRENT_DECODES) {
+    if (waiting.length >= MAX_WAITING_DECODES) throw overloaded();
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  } else activeDecodes += 1;
   try {
+    // The uploader may have given up while queued; skip the expensive work.
+    if (isCancelled()) return undefined;
     return await task();
   } finally {
     const next = waiting.shift();
@@ -109,24 +117,27 @@ const reencode = async (file: Express.Multer.File): Promise<void> => {
   file.size = output.length;
 };
 
-const isValidImage = async (file: Express.Multer.File): Promise<boolean> => {
+type Check = 'valid' | 'invalid' | 'busy' | 'cancelled';
+
+const checkImage = async (file: Express.Multer.File, isCancelled: () => boolean): Promise<Check> => {
   try {
-    if (!matchesSignature(file.mimetype, await readHead(file.path))) return false;
-    await withDecodeSlot(() => reencode(file));
-    return true;
-  } catch {
-    return false;
+    if (!matchesSignature(file.mimetype, await readHead(file.path))) return 'invalid';
+    const done = await withDecodeSlot(() => reencode(file).then(() => true), isCancelled);
+    return done ? 'valid' : 'cancelled';
+  } catch (error) {
+    return error instanceof HttpError && error.statusCode === 503 ? 'busy' : 'invalid';
   }
 };
 
 // The client-supplied MIME type is only a hint; every file must decode as the claimed image format.
 const verifyImages = async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
   const files = collectFiles(req);
-  const checks = await Promise.all(files.map(isValidImage));
-  if (checks.every(Boolean)) return next();
+  const isCancelled = () => req.socket.destroyed;
+  const checks = await Promise.all(files.map((f) => checkImage(f, isCancelled)));
+  if (checks.every((c) => c === 'valid')) return next();
 
   await Promise.all(files.map((f) => fs.promises.unlink(f.path).catch(() => undefined)));
-  next(new HttpError(400, 'One or more files are not valid images'));
+  next(checks.includes('busy') ? overloaded() : new HttpError(400, 'One or more files are not valid images'));
 };
 
 // Per-account upload budget, on top of the general API limit; runs after `authenticate`.
