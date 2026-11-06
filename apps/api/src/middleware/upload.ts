@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
 import sharp from 'sharp';
 import { NextFunction, Request, Response } from 'express';
 import { HttpError } from './errorHandler';
@@ -59,6 +60,32 @@ const collectFiles = (req: Request): Express.Multer.File[] => {
 
 // Files are rewritten in place, so never serve a decoded copy from libvips' cache.
 sharp.cache(false);
+// Only JPEG/PNG/WebP/GIF are accepted; keep every other decoder unreachable even if a file slips past the checks.
+sharp.block({
+  operation: [
+    'VipsForeignLoadTiff', 'VipsForeignLoadVips', 'VipsForeignLoadHeif', 'VipsForeignLoadSvg', 'VipsForeignLoadPdf',
+    'VipsForeignLoadMagick', 'VipsForeignLoadJp2k', 'VipsForeignLoadJxl', 'VipsForeignLoadFits',
+    'VipsForeignLoadOpenslide', 'VipsForeignLoadMatrix', 'VipsForeignLoadCsv', 'VipsForeignLoadRad',
+    'VipsForeignLoadPpm', 'VipsForeignLoadAnalyze',
+  ],
+});
+
+// Decoding is CPU- and memory-heavy, so only a couple of images are processed at once across all requests.
+const MAX_CONCURRENT_DECODES = 2;
+let activeDecodes = 0;
+const waiting: Array<() => void> = [];
+
+const withDecodeSlot = async <T>(task: () => Promise<T>): Promise<T> => {
+  if (activeDecodes >= MAX_CONCURRENT_DECODES) await new Promise<void>((resolve) => waiting.push(resolve));
+  else activeDecodes += 1;
+  try {
+    return await task();
+  } finally {
+    const next = waiting.shift();
+    if (next) next();
+    else activeDecodes -= 1;
+  }
+};
 
 const MAX_INPUT_PIXELS = 50_000_000;
 const MAX_DIMENSION = 4096;
@@ -71,7 +98,7 @@ const reencode = async (file: Express.Multer.File): Promise<void> => {
   if (file.mimetype === 'image/jpeg') image = image.rotate();
   image = image.resize({ width: MAX_DIMENSION, height: MAX_DIMENSION, fit: 'inside', withoutEnlargement: true });
 
-  const encoders: Record<string, (img: sharp.Sharp) => sharp.Sharp> = {
+  const encoders: Record<string, (img: ReturnType<typeof sharp>) => ReturnType<typeof sharp>> = {
     'image/jpeg': (img) => img.jpeg({ quality: 88, mozjpeg: true }),
     'image/png': (img) => img.png(),
     'image/webp': (img) => img.webp({ quality: 88 }),
@@ -85,7 +112,7 @@ const reencode = async (file: Express.Multer.File): Promise<void> => {
 const isValidImage = async (file: Express.Multer.File): Promise<boolean> => {
   try {
     if (!matchesSignature(file.mimetype, await readHead(file.path))) return false;
-    await reencode(file);
+    await withDecodeSlot(() => reencode(file));
     return true;
   } catch {
     return false;
@@ -101,6 +128,14 @@ const verifyImages = async (req: Request, _res: Response, next: NextFunction): P
   await Promise.all(files.map((f) => fs.promises.unlink(f.path).catch(() => undefined)));
   next(new HttpError(400, 'One or more files are not valid images'));
 };
+
+// Per-account upload budget, on top of the general API limit; runs after `authenticate`.
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  keyGenerator: (req) => (req as IAuthRequest).user!._id.toString(),
+  message: { success: false, error: 'You are uploading too quickly. Please try again in a few minutes.' },
+});
 
 const ownerPrefix = (req: Request) => `${(req as IAuthRequest).user!._id.toString()}-`;
 
@@ -123,9 +158,14 @@ const createUploader = (folder: Folder) => {
   });
 };
 
-export const singleImage = (folder: Exclude<Folder, 'posts'>, field: string) => [createUploader(folder).single(field), verifyImages];
+export const singleImage = (folder: Exclude<Folder, 'posts'>, field: string) => [
+  uploadLimiter,
+  createUploader(folder).single(field),
+  verifyImages,
+];
 
 export const multipleImages = (folder: Folder, field: string, max: number) => [
+  uploadLimiter,
   createUploader(folder).array(field, max),
   verifyImages,
 ];

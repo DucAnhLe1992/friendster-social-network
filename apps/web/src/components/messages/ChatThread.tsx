@@ -3,15 +3,15 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Send, Loader2, MessageSquareOff } from 'lucide-react';
 import { format, isSameDay } from 'date-fns';
-import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import UserAvatar from '@/components/custom/UserAvatar';
 import EmptyState from '@/components/custom/EmptyState';
 import { useAuthStore } from '@/store/authStore';
 import { useRealtime } from '@/context/RealtimeContext';
-import { apiClient, getErrorMessage } from '@/lib/api';
+import { apiClient } from '@/lib/api';
 import type { Message } from '@/types';
+import { notifyError } from '@/lib/errors';
 
 const MAX = 1000;
 
@@ -49,18 +49,25 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
   });
 
   const list = messages.data ?? [];
-  const lastMessage = list[list.length - 1];
+  const lastMessageId = list[list.length - 1]?._id;
 
+  // Messages count as read only once the reader can actually see this tab.
   useEffect(() => {
-    if (!lastMessage) return;
-    apiClient
-      .markConversationRead(conversationId, lastMessage._id)
-      .then(() => {
-        queryClient.invalidateQueries({ queryKey: ['unread', 'messages'] });
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
-      })
-      .catch(() => undefined);
-  }, [conversationId, lastMessage?._id, queryClient]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!lastMessageId) return;
+    const markRead = () => {
+      if (document.visibilityState !== 'visible') return;
+      apiClient
+        .markConversationRead(conversationId, lastMessageId)
+        .then(() => {
+          queryClient.invalidateQueries({ queryKey: ['unread', 'messages'] });
+          queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        })
+        .catch(() => undefined);
+    };
+    markRead();
+    document.addEventListener('visibilitychange', markRead);
+    return () => document.removeEventListener('visibilitychange', markRead);
+  }, [conversationId, lastMessageId, queryClient]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -117,7 +124,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
       queryClient.setQueryData<Message[]>(messagesKey, (old = []) => [...res.messages, ...old]);
       setHasMore(Boolean(res.meta.hasMore));
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not load older messages'));
+      notifyError(error, 'Could not load older messages');
     } finally {
       setLoadingOlder(false);
     }
@@ -136,7 +143,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
       setDraft('');
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Message not sent'));
+      notifyError(error, 'Message not sent');
     } finally {
       setSending(false);
     }

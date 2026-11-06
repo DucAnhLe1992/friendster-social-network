@@ -51,7 +51,7 @@ friendster-modern/
 - Follower/following counts
 - Profile tabs (Posts, Replies, Media, Likes)
 
-### 5. Feed Algorithm
+### 5. Feed
 - Personalized feed based on following
 - Public explore page
 - Infinite scroll pagination
@@ -208,7 +208,7 @@ Access at: http://localhost:5173
 
 ### Challenges Solved
 - **Real-time notifications**: Socket.io with room-based architecture
-- **Feed algorithm**: Efficient MongoDB queries with proper indexing
+- **Feed queries**: Chronological MongoDB queries with supporting indexes
 - **Image handling**: Extensible upload system (ready for Cloudinary/S3)
 - **Authentication**: Secure JWT with refresh token rotation pattern
 
@@ -221,8 +221,7 @@ Access at: http://localhost:5173
 ## 🔮 Future Enhancements
 
 The architecture supports easy addition of:
-- Stories (24-hour disappearing content)
-- Direct messaging (Socket.io rooms ready)
+- Stories (24-hour disappearing content; only a data model exists today)
 - Video uploads
 - Push notifications
 - Mobile app (React Native can share types)

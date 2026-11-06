@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage } from '@/lib/api';
+import { apiClient } from '@/lib/api';
+import { notifyError } from '@/lib/errors';
 
 const Register = () => {
   const navigate = useNavigate();
@@ -48,7 +49,7 @@ const Register = () => {
       toast.success('Account created successfully!');
       navigate('/');
     } catch (error) {
-      toast.error(getErrorMessage(error));
+      notifyError(error);
     } finally {
       setIsLoading(false);
     }

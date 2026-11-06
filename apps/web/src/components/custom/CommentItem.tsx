@@ -18,8 +18,9 @@ import EditTextDialog from '@/components/custom/EditTextDialog';
 import ConfirmDialog from '@/components/custom/ConfirmDialog';
 import CommentComposer from '@/components/custom/CommentComposer';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage } from '@/lib/api';
+import { apiClient } from '@/lib/api';
 import type { Comment } from '@/types';
+import { notifyError } from '@/lib/errors';
 
 interface CommentItemProps {
   comment: Comment;
@@ -67,7 +68,7 @@ const CommentItem = ({ comment, postId, parentId }: CommentItemProps) => {
     } catch (error) {
       setIsLiked(!next);
       setLikeCount((c) => c + (next ? -1 : 1));
-      toast.error(getErrorMessage(error, 'Could not update like'));
+      notifyError(error, 'Could not update like');
     } finally {
       setLiking(false);
     }
@@ -80,7 +81,7 @@ const CommentItem = ({ comment, postId, parentId }: CommentItemProps) => {
       setIsEdited(true);
       toast.success('Comment updated');
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not update comment'));
+      notifyError(error, 'Could not update comment');
       throw error;
     }
   };
@@ -91,7 +92,7 @@ const CommentItem = ({ comment, postId, parentId }: CommentItemProps) => {
       refreshThread();
       toast.success('Comment deleted');
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not delete comment'));
+      notifyError(error, 'Could not delete comment');
     }
   };
 

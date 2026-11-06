@@ -84,8 +84,26 @@ const findOrCreateDirectConversation = async (a: Types.ObjectId, b: Types.Object
   }
 };
 
+// Sending writes the message and then the conversation's `lastMessage`; if that second write failed, repair it here
+// so a conversation that has messages is never hidden from the list.
+const repairLastMessages = async (viewer: Types.ObjectId): Promise<void> => {
+  const empty = await Conversation.find({ participants: viewer, lastMessage: null }).distinct('_id');
+  if (empty.length === 0) return;
+  const latest = await Message.aggregate<{ _id: Types.ObjectId; message: Types.ObjectId; at: Date }>([
+    { $match: { conversation: { $in: empty } } },
+    { $sort: { createdAt: -1, _id: -1 } },
+    { $group: { _id: '$conversation', message: { $first: '$_id' }, at: { $first: '$createdAt' } } },
+  ]);
+  await Promise.all(
+    latest.map((row) =>
+      Conversation.updateOne({ _id: row._id, lastMessage: null }, { $set: { lastMessage: row.message, updatedAt: row.at } })
+    )
+  );
+};
+
 export const listConversations = async (req: IAuthRequest, res: Response): Promise<void> => {
   const viewerId = req.user!._id.toString();
+  await repairLastMessages(req.user!._id);
   const conversations = await Conversation.find({ participants: req.user!._id, lastMessage: { $ne: null } })
     .sort({ updatedAt: -1 })
     .limit(50)

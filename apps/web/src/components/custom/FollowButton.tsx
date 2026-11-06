@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { Button } from '@/components/ui/button';
 import { useAuthStore } from '@/store/authStore';
-import { apiClient, getErrorMessage } from '@/lib/api';
+import { apiClient } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { notifyError } from '@/lib/errors';
 
 interface FollowButtonProps {
   handle: string;
@@ -42,7 +42,7 @@ const FollowButton = ({ handle, userId, isFollowing: initial = false, onChange, 
       queryClient.invalidateQueries({ queryKey: ['feed'] });
       queryClient.invalidateQueries({ queryKey: ['suggestions'] });
     } catch (error) {
-      toast.error(getErrorMessage(error, 'Could not update follow'));
+      notifyError(error, 'Could not update follow');
     } finally {
       setBusy(false);
     }

@@ -2,7 +2,7 @@ import request from 'supertest';
 import mongoose from 'mongoose';
 import { describe, expect, it } from 'vitest';
 import { app, auth, registerUser } from './helpers';
-import { Message } from '../src/models';
+import { Conversation, Message } from '../src/models';
 
 describe('conversations', () => {
   it('resolves simultaneous starts from both participants to a single conversation', async () => {
@@ -82,5 +82,18 @@ describe('conversations', () => {
     await request(app).post(`/api/conversations/${id}/read`).set(auth(bob)).send({ upTo: first.body.data.message._id }).expect(200);
     const after = await request(app).get('/api/conversations/unread-count').set(auth(bob));
     expect(after.body.data.unreadCount).toBe(1);
+  });
+
+  it('still lists a conversation if saving its latest message pointer failed', async () => {
+    const alice = await registerUser('alice');
+    await registerUser('bob');
+    const start = await request(app).post('/api/conversations').set(auth(alice)).send({ handle: 'bob' });
+    const id = start.body.data.conversation._id;
+    await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'hello' }).expect(201);
+    await Conversation.updateOne({ _id: id }, { $set: { lastMessage: null } });
+
+    const list = await request(app).get('/api/conversations').set(auth(alice));
+    expect(list.body.data.conversations).toHaveLength(1);
+    expect(list.body.data.conversations[0].lastMessage.content).toBe('hello');
   });
 });
