@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { Types } from 'mongoose';
+import { PipelineStage, Types } from 'mongoose';
 import { Conversation, Message, User } from '../models';
 import { createMessageSchema, markReadSchema, messagesQuerySchema, startConversationSchema } from '../utils/validation';
 import { AUTHOR_FIELDS, publicUser } from '../utils/serializers';
@@ -19,11 +19,38 @@ const unreadFor = (viewer: Types.ObjectId, conversationIds: Types.ObjectId[]) =>
 const unreadMap = async (viewer: Types.ObjectId, conversationIds: Types.ObjectId[]) =>
   new Map((await unreadFor(viewer, conversationIds)).map((row) => [row._id.toString(), row.count]));
 
-const summarize = (conversation: IConversation | Record<string, unknown>, viewerId: string, unread = 0) => {
+type LatestMessage = { content: string; sender: Types.ObjectId; createdAt: Date };
+
+// The newest message is always read from the messages themselves, so a summary can never be stale or move backward.
+const latestMessages = async (conversationIds: Types.ObjectId[], limit?: number) => {
+  const pipeline: PipelineStage[] = [
+    { $match: { conversation: { $in: conversationIds } } },
+    { $sort: { conversation: 1, createdAt: -1, _id: -1 } },
+    {
+      $group: {
+        _id: '$conversation',
+        content: { $first: '$content' },
+        sender: { $first: '$sender' },
+        createdAt: { $first: '$createdAt' },
+        messageId: { $first: '$_id' },
+      },
+    },
+    { $sort: { createdAt: -1, messageId: -1 } },
+  ];
+  if (limit) pipeline.push({ $limit: limit });
+  const rows = await Message.aggregate<LatestMessage & { _id: Types.ObjectId }>(pipeline);
+  return rows;
+};
+
+const summarize = (
+  conversation: IConversation | Record<string, unknown>,
+  viewerId: string,
+  unread = 0,
+  last: LatestMessage | null = null
+) => {
   const c = conversation as unknown as {
     _id: Types.ObjectId;
     participants: ParticipantDoc[];
-    lastMessage?: { content: string; sender: Types.ObjectId; createdAt: Date } | null;
     updatedAt: Date;
   };
   const other = c.participants.find((p) => p._id.toString() !== viewerId) ?? c.participants[0];
@@ -31,12 +58,16 @@ const summarize = (conversation: IConversation | Record<string, unknown>, viewer
   return {
     _id: c._id.toString(),
     participant: publicUser(other, viewerId),
-    lastMessage: c.lastMessage
-      ? { content: c.lastMessage.content, sender: c.lastMessage.sender.toString(), createdAt: c.lastMessage.createdAt }
-      : null,
+    lastMessage: last ? { content: last.content, sender: last.sender.toString(), createdAt: last.createdAt } : null,
     unreadCount: unread,
-    updatedAt: c.updatedAt,
+    updatedAt: last?.createdAt ?? c.updatedAt,
   };
+};
+
+const describeOne = async (conversation: IConversation | Record<string, unknown>, viewer: Types.ObjectId) => {
+  const id = (conversation as { _id: Types.ObjectId })._id;
+  const [counts, [last]] = await Promise.all([unreadMap(viewer, [id]), latestMessages([id])]);
+  return summarize(conversation, viewer.toString(), counts.get(id.toString()), last ?? null);
 };
 
 const PARTICIPANT_FIELDS = `${AUTHOR_FIELDS} followers`;
@@ -84,38 +115,22 @@ const findOrCreateDirectConversation = async (a: Types.ObjectId, b: Types.Object
   }
 };
 
-// Sending writes the message and then the conversation's `lastMessage`; if that second write failed, repair it here
-// so a conversation that has messages is never hidden from the list.
-const repairLastMessages = async (viewer: Types.ObjectId): Promise<void> => {
-  const empty = await Conversation.find({ participants: viewer, lastMessage: null }).distinct('_id');
-  if (empty.length === 0) return;
-  const latest = await Message.aggregate<{ _id: Types.ObjectId; message: Types.ObjectId; at: Date }>([
-    { $match: { conversation: { $in: empty } } },
-    { $sort: { createdAt: -1, _id: -1 } },
-    { $group: { _id: '$conversation', message: { $first: '$_id' }, at: { $first: '$createdAt' } } },
-  ]);
-  await Promise.all(
-    latest.map((row) =>
-      Conversation.updateOne({ _id: row._id, lastMessage: null }, { $set: { lastMessage: row.message, updatedAt: row.at } })
-    )
-  );
-};
-
 export const listConversations = async (req: IAuthRequest, res: Response): Promise<void> => {
   const viewerId = req.user!._id.toString();
-  await repairLastMessages(req.user!._id);
-  const conversations = await Conversation.find({ participants: req.user!._id, lastMessage: { $ne: null } })
-    .sort({ updatedAt: -1 })
-    .limit(50)
-    .populate('participants', PARTICIPANT_FIELDS)
-    .populate('lastMessage', 'content sender createdAt')
-    .lean();
-  const counts = await unreadMap(req.user!._id, conversations.map((c) => c._id));
-
-  res.status(200).json({
-    success: true,
-    data: { conversations: conversations.map((c) => summarize(c, viewerId, counts.get(c._id.toString()))) },
+  const ids = await Conversation.find({ participants: req.user!._id }).distinct('_id');
+  const latest = await latestMessages(ids, 50);
+  const shownIds = latest.map((row) => row._id);
+  const [docs, counts] = await Promise.all([
+    Conversation.find({ _id: { $in: shownIds } }).populate('participants', PARTICIPANT_FIELDS).lean(),
+    unreadMap(req.user!._id, shownIds),
+  ]);
+  const byId = new Map(docs.map((c) => [c._id.toString(), c]));
+  const conversations = latest.flatMap((row) => {
+    const c = byId.get(row._id.toString());
+    return c ? [summarize(c, viewerId, counts.get(row._id.toString()), row)] : [];
   });
+
+  res.status(200).json({ success: true, data: { conversations } });
 };
 
 export const getUnreadTotal = async (req: IAuthRequest, res: Response): Promise<void> => {
@@ -139,37 +154,25 @@ export const startConversation = async (req: IAuthRequest, res: Response): Promi
   }
 
   const conversationId = await findOrCreateDirectConversation(me, other._id);
-  const conversation = await Conversation.findById(conversationId)
-    .populate('participants', PARTICIPANT_FIELDS)
-    .populate('lastMessage', 'content sender createdAt')
-    .lean();
+  const conversation = await Conversation.findById(conversationId).populate('participants', PARTICIPANT_FIELDS).lean();
 
-  const counts = await unreadMap(me, [conversationId]);
-  res.status(200).json({
-    success: true,
-    data: { conversation: summarize(conversation!, me.toString(), counts.get(conversationId.toString())) },
-  });
+  res.status(200).json({ success: true, data: { conversation: await describeOne(conversation!, me) } });
 };
 
 export const getConversation = async (req: IAuthRequest, res: Response): Promise<void> => {
   const conversation = await findOwnConversation(req.params.id, req.user!._id)
     .populate('participants', PARTICIPANT_FIELDS)
-    .populate('lastMessage', 'content sender createdAt')
     .lean();
 
   if (!conversation) {
     res.status(404).json({ success: false, error: 'Conversation not found' });
     return;
   }
-  const counts = await unreadMap(req.user!._id, [conversation._id]);
-  res.status(200).json({
-    success: true,
-    data: { conversation: summarize(conversation, req.user!._id.toString(), counts.get(conversation._id.toString())) },
-  });
+  res.status(200).json({ success: true, data: { conversation: await describeOne(conversation, req.user!._id) } });
 };
 
 export const getMessages = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const { before, limit } = messagesQuerySchema.parse(req.query);
+  const { before, after, limit } = messagesQuerySchema.parse(req.query);
   const conversation = await findOwnConversation(req.params.id, req.user!._id).select('_id').lean();
   if (!conversation) {
     res.status(404).json({ success: false, error: 'Conversation not found' });
@@ -177,30 +180,38 @@ export const getMessages = async (req: IAuthRequest, res: Response): Promise<voi
   }
 
   const query: Record<string, unknown> = { conversation: conversation._id };
-  if (before) {
-    const cursor = await Message.findOne({ _id: before, conversation: conversation._id }).select('createdAt').lean();
+  const cursorId = before ?? after;
+  if (cursorId) {
+    const cursor = await Message.findOne({ _id: cursorId, conversation: conversation._id }).select('createdAt').lean();
     if (!cursor) {
       res.status(400).json({ success: false, error: 'Invalid cursor' });
       return;
     }
+    const op = before ? '$lt' : '$gt';
     query.$or = [
-      { createdAt: { $lt: cursor.createdAt } },
-      { createdAt: cursor.createdAt, _id: { $lt: cursor._id } },
+      { createdAt: { [op]: cursor.createdAt } },
+      { createdAt: cursor.createdAt, _id: { [op]: cursor._id } },
     ];
   }
 
-  const messages = await Message.find(query).sort({ createdAt: -1, _id: -1 }).limit(limit + 1).lean();
+  // `after` pages forward (oldest first) so a reconnecting client can fill a gap in order.
+  const direction = after ? 1 : -1;
+  const messages = await Message.find(query)
+    .sort({ createdAt: direction, _id: direction })
+    .limit(limit + 1)
+    .lean();
   const hasMore = messages.length > limit;
+  const page = messages.slice(0, limit);
 
   res.status(200).json({
     success: true,
-    data: { messages: messages.slice(0, limit).reverse() },
+    data: { messages: after ? page : page.reverse() },
     meta: { hasMore },
   });
 };
 
 export const sendMessage = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const { content } = createMessageSchema.parse(req.body);
+  const { content, clientId } = createMessageSchema.parse(req.body);
   const sender = req.user!._id;
 
   const conversation = await findOwnConversation(req.params.id, sender);
@@ -209,14 +220,27 @@ export const sendMessage = async (req: IAuthRequest, res: Response): Promise<voi
     return;
   }
 
-  const message = await Message.create({ conversation: conversation._id, sender, content });
-  await Conversation.updateOne({ _id: conversation._id }, { $set: { lastMessage: message._id } });
+  // Retrying with the same client ID returns the original message instead of storing a duplicate.
+  const findExisting = () =>
+    clientId ? Message.findOne({ conversation: conversation._id, sender, clientId }) : Promise.resolve(null);
+  let message = await findExisting();
+  let created = false;
+  if (!message) {
+    try {
+      message = await Message.create({ conversation: conversation._id, sender, content, ...(clientId && { clientId }) });
+      created = true;
+    } catch (error) {
+      if (!isDuplicateKey(error)) throw error;
+      message = await findExisting();
+      if (!message) throw error;
+    }
+  }
 
   const payload = { conversationId: conversation._id.toString(), message: message.toJSON() };
   const io = getIo(req);
   for (const id of conversation.participants) io.to(userRoom(id.toString())).emit('new_message', payload);
 
-  res.status(201).json({ success: true, data: { message: message.toJSON() } });
+  res.status(created ? 201 : 200).json({ success: true, data: { message: message.toJSON() } });
 };
 
 export const markConversationRead = async (req: IAuthRequest, res: Response): Promise<void> => {

@@ -1,5 +1,5 @@
 import { Outlet } from 'react-router-dom';
-import { Sparkles } from 'lucide-react';
+import { Bell, MessageCircle, Sparkles, Users } from 'lucide-react';
 
 const AuthLayout = () => {
   return (
@@ -21,20 +21,18 @@ const AuthLayout = () => {
             Connect with friends, share your moments, and discover amazing content in a modern social experience.
           </p>
           
-          <div className="mt-12 flex gap-4">
-            <div className="glass rounded-2xl p-6 text-center">
-              <div className="text-2xl font-bold text-foreground">10K+</div>
-              <div className="text-sm text-muted-foreground">Active Users</div>
-            </div>
-            <div className="glass rounded-2xl p-6 text-center">
-              <div className="text-2xl font-bold text-foreground">50K+</div>
-              <div className="text-sm text-muted-foreground">Posts Shared</div>
-            </div>
-            <div className="glass rounded-2xl p-6 text-center">
-              <div className="text-2xl font-bold text-foreground">100K+</div>
-              <div className="text-sm text-muted-foreground">Connections</div>
-            </div>
-          </div>
+          <ul className="mt-12 grid gap-3 w-full max-w-sm">
+            {[
+              { icon: Users, text: 'Follow friends and see their posts first' },
+              { icon: MessageCircle, text: 'Chat in real time with direct messages' },
+              { icon: Bell, text: 'Get notified about likes, replies and mentions' },
+            ].map(({ icon: Icon, text }) => (
+              <li key={text} className="glass rounded-2xl px-5 py-4 flex items-center gap-3">
+                <Icon className="w-5 h-5 text-primary shrink-0" />
+                <span className="text-sm text-foreground">{text}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
       

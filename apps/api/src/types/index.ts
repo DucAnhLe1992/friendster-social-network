@@ -74,6 +74,7 @@ export interface IMessage extends Document {
   sender: Types.ObjectId | IUser;
   content: string;
   isRead: boolean;
+  clientId?: string;
   createdAt: Date;
 }
 
@@ -81,7 +82,6 @@ export interface IConversation extends Document {
   _id: Types.ObjectId;
   participants: Types.ObjectId[];
   pairKey?: string;
-  lastMessage?: Types.ObjectId | IMessage | null;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -225,13 +225,15 @@ export const apiClient = {
     unwrap(api.post<ApiResponse<{ conversation: Conversation }>>('/conversations', { handle })).then((d) => d.conversation),
   getConversation: (id: string) =>
     unwrap(api.get<ApiResponse<{ conversation: Conversation }>>(`/conversations/${id}`)).then((d) => d.conversation),
-  getMessages: async (id: string, before?: string): Promise<{ messages: Message[]; meta: Meta }> => {
-    const { data } = await api.get<ApiResponse<{ messages: Message[] }>>(`/conversations/${id}/messages`, { params: { before } });
+  getMessages: async (id: string, cursor?: { before?: string; after?: string }): Promise<{ messages: Message[]; meta: Meta }> => {
+    const { data } = await api.get<ApiResponse<{ messages: Message[] }>>(`/conversations/${id}/messages`, { params: cursor });
     if (!data.success || !Array.isArray(data.data?.messages)) throw new Error(data.error || 'Unexpected response');
     return { messages: data.data.messages, meta: data.meta ?? {} };
   },
-  sendMessage: (id: string, content: string) =>
-    unwrap(api.post<ApiResponse<{ message: Message }>>(`/conversations/${id}/messages`, { content })).then((d) => d.message),
+  sendMessage: (id: string, content: string, clientId: string) =>
+    unwrap(api.post<ApiResponse<{ message: Message }>>(`/conversations/${id}/messages`, { content, clientId })).then(
+      (d) => d.message
+    ),
   markConversationRead: (id: string, upTo: string) => api.post(`/conversations/${id}/read`, { upTo }),
 };
 

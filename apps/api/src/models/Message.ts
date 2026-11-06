@@ -23,6 +23,9 @@ const messageSchema = new Schema<IMessage>(
       type: Boolean,
       default: false,
     },
+    clientId: {
+      type: String,
+    },
   },
   {
     timestamps: true,
@@ -33,6 +36,10 @@ const messageSchema = new Schema<IMessage>(
 messageSchema.index({ conversation: 1, createdAt: -1, _id: -1 });
 messageSchema.index({ sender: 1 });
 messageSchema.index({ conversation: 1, isRead: 1, sender: 1 });
+messageSchema.index(
+  { conversation: 1, sender: 1, clientId: 1 },
+  { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } }
+);
 
 export const Message = mongoose.model<IMessage>('Message', messageSchema);
 
@@ -45,11 +52,6 @@ const conversationSchema = new Schema<IConversation>(
     }],
     pairKey: {
       type: String,
-    },
-    lastMessage: {
-      type: Schema.Types.ObjectId,
-      ref: 'Message',
-      default: null,
     },
   },
   {

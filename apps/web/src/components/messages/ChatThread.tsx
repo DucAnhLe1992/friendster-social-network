@@ -12,19 +12,21 @@ import { useRealtime } from '@/context/RealtimeContext';
 import { apiClient } from '@/lib/api';
 import type { Message } from '@/types';
 import { notifyError } from '@/lib/errors';
+import { mergeMessages, newClientId } from '@/lib/messageSync';
 
 const MAX = 1000;
 
 const ChatThread = ({ conversationId }: { conversationId: string }) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const socket = useRealtime();
+  const { socket, synced } = useRealtime();
   const myId = useAuthStore((s) => s.user?._id);
 
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const pendingClientId = useRef<{ content: string; id: string } | null>(null);
   const [otherTyping, setOtherTyping] = useState(false);
 
   const scroller = useRef<HTMLDivElement>(null);
@@ -51,9 +53,9 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
   const list = messages.data ?? [];
   const lastMessageId = list[list.length - 1]?._id;
 
-  // Messages count as read only once the reader can actually see this tab.
+  // Messages count as read only once the reader can see this tab and the thread has no unsynchronized gap.
   useEffect(() => {
-    if (!lastMessageId) return;
+    if (!lastMessageId || !synced) return;
     const markRead = () => {
       if (document.visibilityState !== 'visible') return;
       apiClient
@@ -67,7 +69,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
     markRead();
     document.addEventListener('visibilitychange', markRead);
     return () => document.removeEventListener('visibilitychange', markRead);
-  }, [conversationId, lastMessageId, queryClient]);
+  }, [conversationId, lastMessageId, synced, queryClient]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -119,7 +121,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
     if (!list[0] || loadingOlder) return;
     setLoadingOlder(true);
     try {
-      const res = await apiClient.getMessages(conversationId, list[0]._id);
+      const res = await apiClient.getMessages(conversationId, { before: list[0]._id });
       if (scroller.current) keepOffset.current = scroller.current.scrollHeight - scroller.current.scrollTop;
       queryClient.setQueryData<Message[]>(messagesKey, (old = []) => [...res.messages, ...old]);
       setHasMore(Boolean(res.meta.hasMore));
@@ -136,10 +138,11 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
     setSending(true);
     stopTyping();
     try {
-      const message = await apiClient.sendMessage(conversationId, content);
-      queryClient.setQueryData<Message[]>(messagesKey, (old = []) =>
-        old.some((m) => m._id === message._id) ? old : [...old, message]
-      );
+      // Reuse the ID when resending the same text after a failure, so the server never stores it twice.
+      if (pendingClientId.current?.content !== content) pendingClientId.current = { content, id: newClientId() };
+      const message = await apiClient.sendMessage(conversationId, content, pendingClientId.current.id);
+      pendingClientId.current = null;
+      queryClient.setQueryData<Message[]>(messagesKey, (old = []) => mergeMessages(old, [message]) ?? old);
       setDraft('');
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     } catch (error) {
