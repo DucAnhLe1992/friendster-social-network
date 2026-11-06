@@ -98,6 +98,13 @@ describe('conversations', () => {
     expect(results.every((r) => r.status === 201 || r.status === 200)).toBe(true);
     expect(new Set(results.map((r) => r.body.data.message._id)).size).toBe(1);
     expect(await Message.countDocuments({ conversation: id, content: 'only once' })).toBe(1);
+
+    const reused = await request(app)
+      .post(`/api/conversations/${id}/messages`)
+      .set(auth(alice))
+      .send({ ...body, content: 'something else' });
+    expect(reused.status).toBe(409);
+    expect(await Message.countDocuments({ conversation: id })).toBe(1);
   });
 
   it('always shows the newest message in the list, whatever order writes finished in', async () => {

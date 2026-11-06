@@ -13,7 +13,7 @@
     "build": "npm run build:api && npm run build:web",
     "build:api": "npm run build -w @friendster/api",
     "build:web": "npm run build -w @friendster/web",
-    "test": "npm test -w @friendster/api",
+    "test": "npm test -w @friendster/api && npm test -w @friendster/web",
     "db:dev": "docker compose -f docker-compose.dev.yml up -d",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",

@@ -12,15 +12,21 @@ export const recordUploads = async (owner: Types.ObjectId, paths: string[]): Pro
 /** Atomically reserves each image for `postId`; all-or-nothing, and an image can belong to only one post. */
 export const claimForPost = async (postId: Types.ObjectId, owner: Types.ObjectId, paths: string[]): Promise<boolean> => {
   if (new Set(paths).size !== paths.length) return false;
-  for (const path of paths) {
-    const claimed = await Media.findOneAndUpdate(
-      { path, owner, post: null },
-      { $set: { post: postId, state: 'claimed', claimedAt: new Date() } }
-    );
-    if (!claimed) {
-      await releaseClaims(postId);
-      return false;
+  try {
+    for (const path of paths) {
+      const claimed = await Media.findOneAndUpdate(
+        { path, owner, post: null },
+        { $set: { post: postId, state: 'claimed', claimedAt: new Date() } }
+      );
+      if (!claimed) {
+        await releaseClaims(postId);
+        return false;
+      }
     }
+  } catch (error) {
+    // Otherwise the partial claims would expire and the sweeper would delete images the user can still retry with.
+    await releaseClaims(postId).catch(() => undefined);
+    throw error;
   }
   return true;
 };
