@@ -3,7 +3,14 @@ import { io, type Socket } from 'socket.io-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiClient, SERVER_ORIGIN } from '@/lib/api';
-import { applyLiveMessage, catchUp, mergeCursors, snapshotCursors, type SyncCursors } from '@/lib/messageSync';
+import {
+  applyLiveMessage,
+  catchUp,
+  LiveBuffer,
+  mergeCursors,
+  snapshotCursors,
+  type SyncCursors,
+} from '@/lib/messageSync';
 import { useAuthStore } from '@/store/authStore';
 import type { Message, Notification } from '@/types';
 
@@ -25,9 +32,14 @@ interface RealtimeState {
   socket: RealtimeSocket | null;
   /** False until the socket is connected and every loaded thread has been reconciled with the server. */
   synced: boolean;
+  /** Live messages received while a thread is loading; thread loads must go through `liveBuffer.snapshot`. */
+  liveBuffer: LiveBuffer;
 }
 
-const RealtimeContext = createContext<RealtimeState>({ socket: null, synced: false });
+const RealtimeContext = createContext<RealtimeState>({ socket: null, synced: false, liveBuffer: new LiveBuffer() });
+
+const RETRY_BASE_MS = 1000;
+const RETRY_MAX_MS = 30000;
 
 const NOTIFICATION_TEXT: Record<Notification['type'], string> = {
   like: 'liked your post',
@@ -44,12 +56,16 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
   const [socket, setSocket] = useState<RealtimeSocket | null>(null);
   const [synced, setSynced] = useState(false);
   const gap = useRef<{ userId: string | undefined; cursors: SyncCursors } | null>(null);
+  const [liveBuffer] = useState(() => new LiveBuffer());
 
   useEffect(() => {
     if (!accessToken) return;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
 
     // Keep the earliest cursor of an outage: live messages that arrive first must not hide the gap behind them.
     const markGap = () => {
+      clearTimeout(retryTimer);
       if (!gap.current || gap.current.userId !== myId) gap.current = { userId: myId, cursors: snapshotCursors(queryClient) };
       setSynced(false);
     };
@@ -65,7 +81,7 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
     });
 
     next.on('new_message', ({ conversationId, message }) => {
-      applyLiveMessage(queryClient, conversationId, message);
+      applyLiveMessage(queryClient, liveBuffer, conversationId, message);
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
       if (message.sender !== myId) queryClient.invalidateQueries({ queryKey: ['unread', 'messages'] });
     });
@@ -75,20 +91,35 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
     });
 
     // Every connection, including the first, is a sync boundary: messages sent between a thread's HTTP load and the
-    // socket subscribing would otherwise never arrive. Outage cursors are kept until a catch-up fully succeeds.
-    next.on('connect', () => {
-      setSocket(next);
+    // socket subscribing would otherwise never arrive. Cursors are kept, and retried, until every thread reconciles.
+    const sync = () => {
       const previous = gap.current;
       const outage = previous && previous.userId === myId ? previous.cursors : undefined;
       const pending = { userId: myId, cursors: mergeCursors(snapshotCursors(queryClient), outage) };
       gap.current = pending;
       setSynced(false);
-      catchUp(queryClient, pending.cursors).then(() => {
+      catchUp(queryClient, pending.cursors).then((failed) => {
         // A drop during catch-up keeps these cursors as the gap for the next connection.
         if (gap.current !== pending || !next.connected) return;
-        gap.current = null;
-        setSynced(true);
+        if (failed.size === 0) {
+          gap.current = null;
+          attempt = 0;
+          setSynced(true);
+          return;
+        }
+        gap.current = { userId: myId, cursors: failed };
+        const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** attempt++);
+        retryTimer = setTimeout(() => {
+          if (next.connected) sync();
+        }, delay);
       });
+    };
+
+    next.on('connect', () => {
+      setSocket(next);
+      clearTimeout(retryTimer);
+      attempt = 0;
+      sync();
     });
     next.on('disconnect', (reason) => {
       markGap();
@@ -106,9 +137,9 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
       next.disconnect();
       setSocket(null);
     };
-  }, [accessToken, myId, queryClient]);
+  }, [accessToken, myId, queryClient, liveBuffer]);
 
-  return <RealtimeContext.Provider value={{ socket, synced }}>{children}</RealtimeContext.Provider>;
+  return <RealtimeContext.Provider value={{ socket, synced, liveBuffer }}>{children}</RealtimeContext.Provider>;
 };
 
 // eslint-disable-next-line react-refresh/only-export-components

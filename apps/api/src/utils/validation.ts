@@ -29,6 +29,7 @@ export const createPostSchema = z
   .object({
     content: z.string().trim().max(280, 'Post must be at most 280 characters').default(''),
     images: z.array(uploadedImage).max(4, 'Up to 4 images per post').default([]),
+    clientId: z.string().uuid().optional(),
   })
   .refine((data) => data.content.length > 0 || data.images.length > 0, {
     message: 'Write something or add an image',

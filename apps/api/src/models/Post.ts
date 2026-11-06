@@ -1,4 +1,4 @@
-import mongoose, { Schema } from 'mongoose';
+import mongoose, { Query, Schema } from 'mongoose';
 import { IPost } from '../types';
 
 const postSchema = new Schema<IPost>(
@@ -34,6 +34,14 @@ const postSchema = new Schema<IPost>(
       type: Boolean,
       default: false,
     },
+    status: {
+      type: String,
+      enum: ['pending', 'published'],
+      default: 'published',
+    },
+    clientId: {
+      type: String,
+    },
   },
   {
     timestamps: true,
@@ -46,6 +54,19 @@ const postSchema = new Schema<IPost>(
 postSchema.index({ author: 1, createdAt: -1 });
 postSchema.index({ createdAt: -1 });
 postSchema.index({ content: 'text' });
+postSchema.index(
+  { author: 1, clientId: 1 },
+  { unique: true, partialFilterExpression: { clientId: { $type: 'string' } } }
+);
+postSchema.index({ status: 1, createdAt: 1 });
+
+// Pending posts must never leak into feeds, profiles, search, counts or populated references. Posts saved before
+// this field existed have no status and count as published, hence `$ne` rather than an equality match.
+const PUBLIC_QUERIES = /^(find|findOne|findOneAndUpdate|findOneAndDelete|countDocuments|updateOne)$/;
+postSchema.pre(PUBLIC_QUERIES, function (this: Query<unknown, IPost>) {
+  if (this.getOptions().includePending || this.getFilter().status !== undefined) return;
+  this.where({ status: { $ne: 'pending' } });
+});
 
 // Virtual fields
 postSchema.virtual('likeCount').get(function() {

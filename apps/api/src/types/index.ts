@@ -34,6 +34,9 @@ export interface IPost extends Document {
   commentsCount: number;
   sharesCount: number;
   isEdited: boolean;
+  /** Pending posts are mid-publication and invisible to every query unless `includePending` is set. */
+  status: 'pending' | 'published';
+  clientId?: string;
   createdAt: Date;
   updatedAt: Date;
   likeCount: number;

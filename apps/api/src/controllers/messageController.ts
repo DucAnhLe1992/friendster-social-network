@@ -5,6 +5,7 @@ import { createMessageSchema, markReadSchema, messagesQuerySchema, startConversa
 import { AUTHOR_FIELDS, publicUser } from '../utils/serializers';
 import { getIo } from '../services/notifications';
 import { userRoom } from '../realtime';
+import { isDuplicateKey } from '../middleware/errorHandler';
 import { IAuthRequest, IConversation } from '../types';
 
 type ParticipantDoc = Parameters<typeof publicUser>[0];
@@ -75,7 +76,6 @@ const PARTICIPANT_FIELDS = `${AUTHOR_FIELDS} followers`;
 const findOwnConversation = (id: string, userId: Types.ObjectId) =>
   Conversation.findOne({ _id: id, participants: userId });
 
-const isDuplicateKey = (error: unknown) => (error as { code?: number })?.code === 11000;
 
 const findOrCreateDirectConversation = async (a: Types.ObjectId, b: Types.ObjectId): Promise<Types.ObjectId> => {
   const participants = [a, b].sort((x, y) => x.toString().localeCompare(y.toString()));

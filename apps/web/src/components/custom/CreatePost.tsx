@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import axios from 'axios';
 import { ImagePlus, X, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
@@ -8,6 +9,7 @@ import UserAvatar from '@/components/custom/UserAvatar';
 import { useAuthStore } from '@/store/authStore';
 import { apiClient } from '@/lib/api';
 import { notifyError } from '@/lib/errors';
+import { newClientId } from '@/lib/utils';
 
 const MAX_CHARS = 280;
 const MAX_IMAGES = 4;
@@ -19,6 +21,16 @@ interface Attachment {
   preview: string;
 }
 
+/** One publish attempt; retries of the same content and images reuse its ID and uploads so only one post results. */
+interface Attempt {
+  signature: string;
+  clientId: string;
+  images?: string[];
+}
+
+const attemptSignature = (content: string, attachments: Attachment[]) =>
+  JSON.stringify([content, attachments.map((a) => a.preview)]);
+
 const CreatePost = ({ onSuccess, autoFocus }: { onSuccess?: () => void; autoFocus?: boolean }) => {
   const user = useAuthStore((s) => s.user);
   const queryClient = useQueryClient();
@@ -27,6 +39,7 @@ const CreatePost = ({ onSuccess, autoFocus }: { onSuccess?: () => void; autoFocu
   const [submitting, setSubmitting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const attempt = useRef<Attempt | null>(null);
 
   const previews = useRef<string[]>([]);
   useEffect(() => {
@@ -76,9 +89,16 @@ const CreatePost = ({ onSuccess, autoFocus }: { onSuccess?: () => void; autoFocu
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
+    const text = content.trim();
+    const signature = attemptSignature(text, attachments);
+    if (attempt.current?.signature !== signature) attempt.current = { signature, clientId: newClientId() };
+    const current = attempt.current;
     try {
-      const images = attachments.length ? await apiClient.uploadPostImages(attachments.map((a) => a.file)) : [];
-      await apiClient.createPost(content.trim(), images);
+      if (!current.images) {
+        current.images = attachments.length ? await apiClient.uploadPostImages(attachments.map((a) => a.file)) : [];
+      }
+      await apiClient.createPost(text, current.images, current.clientId);
+      attempt.current = null;
       attachments.forEach((a) => URL.revokeObjectURL(a.preview));
       setContent('');
       setAttachments([]);
@@ -89,6 +109,8 @@ const CreatePost = ({ onSuccess, autoFocus }: { onSuccess?: () => void; autoFocu
       toast.success('Posted');
       onSuccess?.();
     } catch (error) {
+      // Rejected outright (e.g. images expired): the next try must upload again under a fresh ID.
+      if (axios.isAxiosError(error) && error.response?.status === 400) attempt.current = null;
       notifyError(error, 'Could not publish your post');
     } finally {
       setSubmitting(false);

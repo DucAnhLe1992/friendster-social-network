@@ -178,4 +178,83 @@ describe('posts and uploads', () => {
     await request(app).get(image).expect(200);
     await removeUpload(image);
   });
+
+  it('turns retries with the same post ID into one post, and rejects a reused ID with different content', async () => {
+    const alice = await registerUser('alice');
+    const body = { content: 'hello once', clientId: '6f1c7a52-3d4b-4e8f-9a1b-2c3d4e5f6a7b' };
+
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => request(app).post('/api/posts').set(auth(alice)).send(body))
+    );
+    expect(results.filter((r) => r.status === 201)).toHaveLength(1);
+    expect(results.every((r) => r.status === 201 || r.status === 200)).toBe(true);
+    expect(new Set(results.map((r) => r.body.data.post._id)).size).toBe(1);
+    expect(results[0].body.data.post.author.handle).toBe('alice');
+    expect(results[0].body.data.post.status).toBeUndefined();
+
+    const conflict = await request(app).post('/api/posts').set(auth(alice)).send({ ...body, content: 'other' });
+    expect(conflict.status).toBe(409);
+    expect(await Post.countDocuments({ author: alice.id })).toBe(1);
+  });
+
+  it('replays an image post retried after its response was lost', async () => {
+    const alice = await registerUser('alice');
+    const image = await uploadPixel(alice);
+    const body = { images: [image], clientId: '0a9b8c7d-6e5f-4a3b-8c1d-0e9f8a7b6c5d' };
+
+    const first = await request(app).post('/api/posts').set(auth(alice)).send(body).expect(201);
+    const retry = await request(app).post('/api/posts').set(auth(alice)).send(body).expect(200);
+    expect(retry.body.data.post._id).toBe(first.body.data.post._id);
+    expect(await Post.countDocuments({ author: alice.id })).toBe(1);
+    await removeUpload(image);
+  });
+
+  it('keeps posts that are still being published out of every public view', async () => {
+    const alice = await registerUser('alice');
+    const pending = await Post.create({ author: alice.id, content: 'not yet #secret', status: 'pending' });
+
+    await request(app).get(`/api/posts/${pending._id}`).set(auth(alice)).expect(404);
+    const all = await request(app).get('/api/posts').set(auth(alice)).expect(200);
+    expect(all.body.data.posts).toHaveLength(0);
+    expect(all.body.meta.total).toBe(0);
+    const mine = await request(app).get('/api/posts/user/alice').set(auth(alice)).expect(200);
+    expect(mine.body.data.posts).toHaveLength(0);
+    const trending = await request(app).get('/api/posts/trending').set(auth(alice)).expect(200);
+    expect(trending.body.data.topics).toHaveLength(0);
+  });
+
+  it('never exposes a post whose publication was interrupted after its image was swept', async () => {
+    const alice = await registerUser('alice');
+    const owner = new Types.ObjectId(alice.id);
+    const image = await uploadPixel(alice);
+    const postId = new Types.ObjectId();
+    const longAgo = new Date(Date.now() - 3_600_000);
+
+    await claimForPost(postId, owner, [image]);
+    await Media.collection.updateOne({ path: image }, { $set: { claimedAt: longAgo } });
+    expect(await sweepAbandonedUploads(86_400_000)).toBe(1);
+    // The process saved the pending post, then stopped before finalizing or rolling back.
+    await Post.collection.insertOne({ _id: postId, author: owner, content: '', images: [image], likes: [], status: 'pending', createdAt: longAgo, updatedAt: longAgo });
+
+    await request(app).get(`/api/posts/${postId}`).set(auth(alice)).expect(404);
+    await sweepAbandonedUploads(86_400_000);
+    expect(await Post.collection.countDocuments({ _id: postId })).toBe(0);
+  });
+
+  it('finishes an interrupted publication whose images are all still in place', async () => {
+    const alice = await registerUser('alice');
+    const owner = new Types.ObjectId(alice.id);
+    const image = await uploadPixel(alice);
+    const postId = new Types.ObjectId();
+    const longAgo = new Date(Date.now() - 3_600_000);
+
+    await claimForPost(postId, owner, [image]);
+    await Post.collection.insertOne({ _id: postId, author: owner, content: '', images: [image], likes: [], status: 'pending', createdAt: longAgo, updatedAt: longAgo });
+    await Media.collection.updateOne({ path: image }, { $set: { claimedAt: longAgo } });
+
+    expect(await sweepAbandonedUploads(86_400_000)).toBe(0);
+    await request(app).get(`/api/posts/${postId}`).set(auth(alice)).expect(200);
+    await request(app).get(image).expect(200);
+    await removeUpload(image);
+  });
 });

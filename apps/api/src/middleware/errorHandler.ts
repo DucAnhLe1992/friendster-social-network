@@ -61,3 +61,5 @@ export class HttpError extends Error {
     super(message);
   }
 }
+
+export const isDuplicateKey = (error: unknown) => (error as { code?: number })?.code === 11000;
