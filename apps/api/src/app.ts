@@ -3,7 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
-import mongoose from 'mongoose';
+import { pool } from './database/db';
 import { createServer } from 'http';
 
 import { env } from './config/env';
@@ -47,8 +47,8 @@ export const createApp = () => {
     res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
   });
 
-  app.get('/ready', (_req, res) => {
-    const ready = mongoose.connection.readyState === 1;
+  app.get('/ready', async (_req, res) => {
+    const ready = await pool.query('select 1').then(() => true, () => false);
     res.status(ready ? 200 : 503).json({ status: ready ? 'READY' : 'UNAVAILABLE', database: ready });
   });
 

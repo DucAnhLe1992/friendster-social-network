@@ -14,17 +14,21 @@ jobs:
   api:
     runs-on: ubuntu-latest
     services:
-      mongodb:
-        image: mongo:7
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: friendster
+          POSTGRES_PASSWORD: friendster
+          POSTGRES_DB: friendster_test
         ports:
-          - 27017:27017
+          - 5432:5432
         options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-cmd "pg_isready -U friendster -d friendster_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
-      MONGODB_URI_TEST: mongodb://localhost:27017
+      DATABASE_URL_TEST: postgresql://friendster:friendster@localhost:5432/friendster_test
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +49,11 @@ jobs:
 
       - name: Lint
         run: npm run lint -w @friendster/api
+
+      - name: Check migrations match the schema
+        run: |
+          npm run db:generate -w @friendster/api
+          test -z "$(git status --porcelain apps/api/migrations)"
 
       - name: Test
         run: npm test -w @friendster/api

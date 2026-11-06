@@ -1,7 +1,12 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import { app, registerUser } from './helpers';
-import { RefreshSession } from '../src/models';
+import { count, eq, isNotNull } from 'drizzle-orm';
+import { db } from '../src/database/db';
+import { refreshSessionsTable as sessions } from '../src/database/schema';
+
+const backdateRotations = () =>
+  db.update(sessions).set({ rotatedAt: new Date(Date.now() - 60_000) }).where(isNotNull(sessions.rotatedAt));
 
 const refresh = (refreshToken: string) => request(app).post('/api/auth/refresh').send({ refreshToken });
 
@@ -14,7 +19,8 @@ describe('sessions', () => {
     expect(retry.status).toBe(200);
     expect(retry.body.data.tokens).toEqual(first.body.data.tokens);
     expect(first.body.data.tokens.refreshToken).not.toBe(alice.refreshToken);
-    expect(await RefreshSession.countDocuments({ user: alice.id })).toBe(2);
+    const [{ total }] = await db.select({ total: count() }).from(sessions).where(eq(sessions.userId, alice.id));
+    expect(total).toBe(2);
 
     const second = await refresh(first.body.data.tokens.refreshToken as string);
     expect(second.status).toBe(200);
@@ -23,7 +29,7 @@ describe('sessions', () => {
   it('rejects a rotated refresh token replayed after its grace period', async () => {
     const alice = await registerUser('alice');
     await refresh(alice.refreshToken).expect(200);
-    await RefreshSession.updateOne({ rotatedAt: { $ne: null } }, { $set: { rotatedAt: new Date(Date.now() - 60_000) } });
+    await backdateRotations();
     expect((await refresh(alice.refreshToken)).status).toBe(401);
   });
 
@@ -39,7 +45,7 @@ describe('sessions', () => {
     const first = await refresh(alice.refreshToken);
     const next = first.body.data.tokens.refreshToken as string;
 
-    await RefreshSession.updateMany({ rotatedAt: { $ne: null } }, { $set: { rotatedAt: new Date(Date.now() - 60_000) } });
+    await backdateRotations();
     expect((await refresh(alice.refreshToken)).status).toBe(401);
     expect((await refresh(next)).status).toBe(401);
   });

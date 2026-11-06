@@ -144,11 +144,11 @@ const verifyImages = async (req: Request, _res: Response, next: NextFunction): P
 const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
-  keyGenerator: (req) => (req as IAuthRequest).user!._id.toString(),
+  keyGenerator: (req) => (req as IAuthRequest).user!.id,
   message: { success: false, error: 'You are uploading too quickly. Please try again in a few minutes.' },
 });
 
-const ownerPrefix = (req: Request) => `${(req as IAuthRequest).user!._id.toString()}-`;
+const ownerPrefix = (req: Request) => `${(req as IAuthRequest).user!.id}-`;
 
 const createUploader = (folder: Folder) => {
   const destination = path.join(UPLOADS_ROOT, folder);

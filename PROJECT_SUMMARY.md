@@ -89,7 +89,7 @@ friendster-modern/
 
 ### Backend
 - **Express.js** with TypeScript
-- **MongoDB** with Mongoose ODM
+- **PostgreSQL on Neon** with Drizzle ORM and drizzle-kit migrations
 - **JWT** for authentication
 - **Socket.io** for real-time communication
 - **Zod** for validation
@@ -171,8 +171,9 @@ Access at: http://localhost
 
 ### Option 2: Manual
 ```bash
-# Terminal 1 - MongoDB
-docker run -d -p 27017:27017 mongo:7-jammy
+# Terminal 1 - Database: set DATABASE_URL in apps/api/.env to your Neon connection string,
+# or start a local Postgres instead
+npm run db:dev
 
 # Terminal 2 - Backend
 cd apps/api
@@ -190,7 +191,7 @@ Access at: http://localhost:5173
 
 1. **Type Safety**: Full TypeScript coverage with shared types
 2. **Security**: JWT tokens, rate limiting, input validation, helmet
-3. **Scalability**: Docker containerization, MongoDB indexing
+3. **Scalability**: Docker containerization, serverless Postgres on Neon, indexed relational schema
 4. **CI/CD**: GitHub Actions for testing and deployment
 5. **Real-time**: Socket.io for notifications and messaging
 6. **State Management**: Zustand for client state, React Query for server state
@@ -201,14 +202,14 @@ Access at: http://localhost:5173
 ## 🎯 Job Interview Talking Points
 
 ### Architecture Decisions
-- **Why MongoDB?** Flexible schema for social data, horizontal scaling
+- **Why PostgreSQL (Neon)?** Follows, likes and conversations are relational; foreign keys, unique constraints and transactions enforce integrity, and Neon provides serverless Postgres with branching
 - **Why Zustand over Redux?** Simpler API, less boilerplate, better TypeScript support
 - **Why TanStack Query?** Automatic caching, background refetching, optimistic updates
 - **Why Docker?** Consistent environments, easy deployment, scalability
 
 ### Challenges Solved
 - **Real-time notifications**: Socket.io with room-based architecture
-- **Feed queries**: Chronological MongoDB queries with supporting indexes
+- **Feed queries**: Chronological SQL queries with composite indexes and full-text search
 - **Image handling**: Extensible upload system (ready for Cloudinary/S3)
 - **Authentication**: Secure JWT with refresh token rotation pattern
 

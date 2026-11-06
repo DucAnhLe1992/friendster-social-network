@@ -19,7 +19,7 @@ export const loginSchema = z.object({
   password: z.string().min(1, 'Password is required'),
 });
 
-const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid ID');
+const objectId = z.string().regex(/^[0-9a-f]{24}$/, 'Invalid ID');
 
 // Only images uploaded through this API are accepted
 const uploadedImage = z.string().regex(/^\/uploads\/posts\/[\w.-]+$/, 'Invalid image');
@@ -90,4 +90,4 @@ export const messagesQuerySchema = z
   })
   .refine((q) => !(q.before && q.after), 'Use either before or after');
 
-export const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const escapeLike = (value: string): string => value.replace(/[\\%_]/g, '\\$&');

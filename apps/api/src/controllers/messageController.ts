@@ -1,205 +1,225 @@
 import { Response } from 'express';
-import { PipelineStage, Types } from 'mongoose';
-import { Conversation, Message, User } from '../models';
+import { and, asc, desc, eq, gt, inArray, isNotNull, lt, lte, ne, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
+import { db } from '../database/db';
+import { conversationParticipantsTable, conversationsTable, messagesTable, usersTable } from '../database/schema';
 import { createMessageSchema, markReadSchema, messagesQuerySchema, startConversationSchema } from '../utils/validation';
-import { AUTHOR_FIELDS, publicUser } from '../utils/serializers';
+import { publicUserColumns } from '../utils/serializers';
 import { getIo } from '../services/notifications';
 import { userRoom } from '../realtime';
 import { isDuplicateKey } from '../middleware/errorHandler';
-import { IAuthRequest, IConversation } from '../types';
+import { IAuthRequest } from '../types';
 
-type ParticipantDoc = Parameters<typeof publicUser>[0];
-
-// Unread state lives only on the messages themselves, so concurrent sends and reads cannot drift apart.
-const unreadFor = (viewer: Types.ObjectId, conversationIds: Types.ObjectId[]) =>
-  Message.aggregate<{ _id: Types.ObjectId; count: number }>([
-    { $match: { conversation: { $in: conversationIds }, sender: { $ne: viewer }, isRead: false } },
-    { $group: { _id: '$conversation', count: { $sum: 1 } } },
-  ]);
-
-const unreadMap = async (viewer: Types.ObjectId, conversationIds: Types.ObjectId[]) =>
-  new Map((await unreadFor(viewer, conversationIds)).map((row) => [row._id.toString(), row.count]));
-
-type LatestMessage = { content: string; sender: Types.ObjectId; createdAt: Date };
-
-// The newest message is always read from the messages themselves, so a summary can never be stale or move backward.
-const latestMessages = async (conversationIds: Types.ObjectId[], limit?: number) => {
-  const pipeline: PipelineStage[] = [
-    { $match: { conversation: { $in: conversationIds } } },
-    { $sort: { conversation: 1, createdAt: -1, _id: -1 } },
-    {
-      $group: {
-        _id: '$conversation',
-        content: { $first: '$content' },
-        sender: { $first: '$sender' },
-        createdAt: { $first: '$createdAt' },
-        messageId: { $first: '$_id' },
-      },
-    },
-    { $sort: { createdAt: -1, messageId: -1 } },
-  ];
-  if (limit) pipeline.push({ $limit: limit });
-  const rows = await Message.aggregate<LatestMessage & { _id: Types.ObjectId }>(pipeline);
-  return rows;
+const messageColumns = {
+  _id: messagesTable.id,
+  conversation: messagesTable.conversationId,
+  sender: messagesTable.senderId,
+  content: messagesTable.content,
+  isRead: messagesTable.isRead,
+  createdAt: messagesTable.createdAt,
 };
 
-const summarize = (
-  conversation: IConversation | Record<string, unknown>,
-  viewerId: string,
-  unread = 0,
-  last: LatestMessage | null = null
-) => {
-  const c = conversation as unknown as {
-    _id: Types.ObjectId;
-    participants: ParticipantDoc[];
-    updatedAt: Date;
-  };
-  const other = c.participants.find((p) => p._id.toString() !== viewerId) ?? c.participants[0];
+const myConversationIds = (me: string) =>
+  db
+    .select({ id: conversationParticipantsTable.conversationId })
+    .from(conversationParticipantsTable)
+    .where(eq(conversationParticipantsTable.userId, me));
 
-  return {
-    _id: c._id.toString(),
-    participant: publicUser(other, viewerId),
-    lastMessage: last ? { content: last.content, sender: last.sender.toString(), createdAt: last.createdAt } : null,
-    unreadCount: unread,
-    updatedAt: last?.createdAt ?? c.updatedAt,
-  };
+const unreadIn = (me: string, conversationId: typeof conversationsTable.id | string) =>
+  and(eq(messagesTable.conversationId, conversationId), ne(messagesTable.senderId, me), eq(messagesTable.isRead, false));
+
+// Summaries are computed from the messages themselves, so unread counts and the latest message can never drift.
+const selectSummaries = (me: string) => {
+  const latest = db
+    .selectDistinctOn([messagesTable.conversationId], {
+      conversationId: messagesTable.conversationId,
+      id: messagesTable.id,
+      content: messagesTable.content,
+      senderId: messagesTable.senderId,
+      createdAt: messagesTable.createdAt,
+    })
+    .from(messagesTable)
+    .where(inArray(messagesTable.conversationId, myConversationIds(me)))
+    .orderBy(messagesTable.conversationId, desc(messagesTable.createdAt), desc(messagesTable.id))
+    .as('latest');
+  const other = alias(conversationParticipantsTable, 'other');
+
+  const query = db
+    .select({
+      _id: conversationsTable.id,
+      participant: publicUserColumns(me),
+      lastContent: latest.content,
+      lastSender: latest.senderId,
+      lastAt: latest.createdAt,
+      updatedAt: conversationsTable.updatedAt,
+      unreadCount: sql<number>`(select count(*)::int from ${messagesTable} where ${unreadIn(me, conversationsTable.id)})`,
+    })
+    .from(conversationsTable)
+    .innerJoin(other, and(eq(other.conversationId, conversationsTable.id), ne(other.userId, me)))
+    .innerJoin(usersTable, eq(usersTable.id, other.userId))
+    .leftJoin(latest, eq(latest.conversationId, conversationsTable.id))
+    .$dynamic();
+
+  return { latest, query };
 };
 
-const describeOne = async (conversation: IConversation | Record<string, unknown>, viewer: Types.ObjectId) => {
-  const id = (conversation as { _id: Types.ObjectId })._id;
-  const [counts, [last]] = await Promise.all([unreadMap(viewer, [id]), latestMessages([id])]);
-  return summarize(conversation, viewer.toString(), counts.get(id.toString()), last ?? null);
+type SummaryRow = Awaited<ReturnType<typeof selectSummaries>['query']>[number];
+
+const toSummary = (row: SummaryRow) => ({
+  _id: row._id,
+  participant: row.participant,
+  lastMessage:
+    row.lastAt && row.lastSender !== null && row.lastContent !== null
+      ? { content: row.lastContent, sender: row.lastSender, createdAt: row.lastAt }
+      : null,
+  unreadCount: row.unreadCount,
+  updatedAt: row.lastAt ?? row.updatedAt,
+});
+
+const describeOne = async (conversationId: string, me: string) => {
+  const { query } = selectSummaries(me);
+  const [row] = await query
+    .where(and(eq(conversationsTable.id, conversationId), inArray(conversationsTable.id, myConversationIds(me))))
+    .limit(1);
+  return row ? toSummary(row) : null;
 };
 
-const PARTICIPANT_FIELDS = `${AUTHOR_FIELDS} followers`;
+const findOwnConversation = async (id: string, me: string) => {
+  const [row] = await db
+    .select({ id: conversationParticipantsTable.conversationId })
+    .from(conversationParticipantsTable)
+    .where(and(eq(conversationParticipantsTable.conversationId, id), eq(conversationParticipantsTable.userId, me)))
+    .limit(1);
+  return row ?? null;
+};
 
-const findOwnConversation = (id: string, userId: Types.ObjectId) =>
-  Conversation.findOne({ _id: id, participants: userId });
+const participantsOf = async (conversationId: string) =>
+  (
+    await db
+      .select({ userId: conversationParticipantsTable.userId })
+      .from(conversationParticipantsTable)
+      .where(eq(conversationParticipantsTable.conversationId, conversationId))
+  ).map((p) => p.userId);
 
+const findOrCreateDirectConversation = (a: string, b: string): Promise<string> => {
+  const pair = [a, b].sort((x, y) => x.localeCompare(y));
+  const pairKey = pair.join(':');
 
-const findOrCreateDirectConversation = async (a: Types.ObjectId, b: Types.ObjectId): Promise<Types.ObjectId> => {
-  const participants = [a, b].sort((x, y) => x.toString().localeCompare(y.toString()));
-  const pairKey = participants.map(String).join(':');
-
-  const existing = await Conversation.findOne({ pairKey }).select('_id').lean();
-  if (existing) return existing._id;
-
-  const legacy = await Conversation.findOne({ pairKey: { $exists: false }, participants: { $all: participants, $size: 2 } })
-    .select('_id')
-    .lean();
-  if (legacy) {
-    try {
-      await Conversation.updateOne({ _id: legacy._id }, { $set: { pairKey } });
-      return legacy._id;
-    } catch (error) {
-      if (!isDuplicateKey(error)) throw error;
-      // Another request keyed this pair first; always hand back the canonical conversation.
-      const winner = await Conversation.findOne({ pairKey }).select('_id').lean();
-      return winner!._id;
+  return db.transaction(async (tx) => {
+    // A concurrent creator makes this wait for its commit, after which the lookup below sees its row.
+    const [created] = await tx
+      .insert(conversationsTable)
+      .values({ pairKey })
+      .onConflictDoNothing({ target: conversationsTable.pairKey })
+      .returning({ id: conversationsTable.id });
+    if (created) {
+      await tx.insert(conversationParticipantsTable).values(pair.map((userId) => ({ conversationId: created.id, userId })));
+      return created.id;
     }
-  }
-
-  try {
-    const created = await Conversation.findOneAndUpdate(
-      { pairKey },
-      { $setOnInsert: { pairKey, participants } },
-      { new: true, upsert: true }
-    )
-      .select('_id')
-      .lean();
-    return created!._id;
-  } catch (error) {
-    if (!isDuplicateKey(error)) throw error;
-    const winner = await Conversation.findOne({ pairKey }).select('_id').lean();
-    return winner!._id;
-  }
+    const [existing] = await tx
+      .select({ id: conversationsTable.id })
+      .from(conversationsTable)
+      .where(eq(conversationsTable.pairKey, pairKey))
+      .limit(1);
+    return existing.id;
+  });
 };
 
 export const listConversations = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const viewerId = req.user!._id.toString();
-  const ids = await Conversation.find({ participants: req.user!._id }).distinct('_id');
-  const latest = await latestMessages(ids, 50);
-  const shownIds = latest.map((row) => row._id);
-  const [docs, counts] = await Promise.all([
-    Conversation.find({ _id: { $in: shownIds } }).populate('participants', PARTICIPANT_FIELDS).lean(),
-    unreadMap(req.user!._id, shownIds),
-  ]);
-  const byId = new Map(docs.map((c) => [c._id.toString(), c]));
-  const conversations = latest.flatMap((row) => {
-    const c = byId.get(row._id.toString());
-    return c ? [summarize(c, viewerId, counts.get(row._id.toString()), row)] : [];
-  });
+  const me = req.user!.id;
+  const { latest, query } = selectSummaries(me);
+  const rows = await query
+    .where(and(inArray(conversationsTable.id, myConversationIds(me)), isNotNull(latest.id)))
+    .orderBy(desc(latest.createdAt), desc(latest.id))
+    .limit(50);
 
-  res.status(200).json({ success: true, data: { conversations } });
+  res.status(200).json({ success: true, data: { conversations: rows.map(toSummary) } });
 };
 
 export const getUnreadTotal = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const ids = await Conversation.find({ participants: req.user!._id }).distinct('_id');
-  const rows = await unreadFor(req.user!._id, ids);
-  res.status(200).json({ success: true, data: { unreadCount: rows.reduce((sum, row) => sum + row.count, 0) } });
+  const me = req.user!.id;
+  const [{ unreadCount }] = await db
+    .select({ unreadCount: sql<number>`count(*)::int` })
+    .from(messagesTable)
+    .where(
+      and(
+        inArray(messagesTable.conversationId, myConversationIds(me)),
+        ne(messagesTable.senderId, me),
+        eq(messagesTable.isRead, false)
+      )
+    );
+  res.status(200).json({ success: true, data: { unreadCount } });
 };
 
 export const startConversation = async (req: IAuthRequest, res: Response): Promise<void> => {
   const { handle } = startConversationSchema.parse(req.body);
-  const me = req.user!._id;
+  const me = req.user!.id;
 
-  const other = await User.findOne({ handle }).select('_id');
+  const [other] = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.handle, handle)).limit(1);
   if (!other) {
     res.status(404).json({ success: false, error: 'User not found' });
     return;
   }
-  if (other._id.equals(me)) {
+  if (other.id === me) {
     res.status(400).json({ success: false, error: 'You cannot message yourself' });
     return;
   }
 
-  const conversationId = await findOrCreateDirectConversation(me, other._id);
-  const conversation = await Conversation.findById(conversationId).populate('participants', PARTICIPANT_FIELDS).lean();
-
-  res.status(200).json({ success: true, data: { conversation: await describeOne(conversation!, me) } });
+  const conversationId = await findOrCreateDirectConversation(me, other.id);
+  res.status(200).json({ success: true, data: { conversation: await describeOne(conversationId, me) } });
 };
 
 export const getConversation = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const conversation = await findOwnConversation(req.params.id, req.user!._id)
-    .populate('participants', PARTICIPANT_FIELDS)
-    .lean();
-
+  const conversation = await describeOne(req.params.id, req.user!.id);
   if (!conversation) {
     res.status(404).json({ success: false, error: 'Conversation not found' });
     return;
   }
-  res.status(200).json({ success: true, data: { conversation: await describeOne(conversation, req.user!._id) } });
+  res.status(200).json({ success: true, data: { conversation } });
+};
+
+const findMessageIn = async (conversationId: string, id: string) => {
+  const [row] = await db
+    .select({ id: messagesTable.id, createdAt: messagesTable.createdAt })
+    .from(messagesTable)
+    .where(and(eq(messagesTable.id, id), eq(messagesTable.conversationId, conversationId)))
+    .limit(1);
+  return row ?? null;
 };
 
 export const getMessages = async (req: IAuthRequest, res: Response): Promise<void> => {
   const { before, after, limit } = messagesQuerySchema.parse(req.query);
-  const conversation = await findOwnConversation(req.params.id, req.user!._id).select('_id').lean();
+  const conversation = await findOwnConversation(req.params.id, req.user!.id);
   if (!conversation) {
     res.status(404).json({ success: false, error: 'Conversation not found' });
     return;
   }
 
-  const query: Record<string, unknown> = { conversation: conversation._id };
+  const conditions = [eq(messagesTable.conversationId, conversation.id)];
   const cursorId = before ?? after;
   if (cursorId) {
-    const cursor = await Message.findOne({ _id: cursorId, conversation: conversation._id }).select('createdAt').lean();
+    const cursor = await findMessageIn(conversation.id, cursorId);
     if (!cursor) {
       res.status(400).json({ success: false, error: 'Invalid cursor' });
       return;
     }
-    const op = before ? '$lt' : '$gt';
-    query.$or = [
-      { createdAt: { [op]: cursor.createdAt } },
-      { createdAt: cursor.createdAt, _id: { [op]: cursor._id } },
-    ];
+    const op = before ? lt : gt;
+    conditions.push(
+      or(
+        op(messagesTable.createdAt, cursor.createdAt),
+        and(eq(messagesTable.createdAt, cursor.createdAt), op(messagesTable.id, cursor.id))
+      )!
+    );
   }
 
   // `after` pages forward (oldest first) so a reconnecting client can fill a gap in order.
-  const direction = after ? 1 : -1;
-  const messages = await Message.find(query)
-    .sort({ createdAt: direction, _id: direction })
-    .limit(limit + 1)
-    .lean();
+  const order = after ? asc : desc;
+  const messages = await db
+    .select(messageColumns)
+    .from(messagesTable)
+    .where(and(...conditions))
+    .orderBy(order(messagesTable.createdAt), order(messagesTable.id))
+    .limit(limit + 1);
   const hasMore = messages.length > limit;
   const page = messages.slice(0, limit);
 
@@ -212,7 +232,7 @@ export const getMessages = async (req: IAuthRequest, res: Response): Promise<voi
 
 export const sendMessage = async (req: IAuthRequest, res: Response): Promise<void> => {
   const { content, clientId } = createMessageSchema.parse(req.body);
-  const sender = req.user!._id;
+  const sender = req.user!.id;
 
   const conversation = await findOwnConversation(req.params.id, sender);
   if (!conversation) {
@@ -221,13 +241,30 @@ export const sendMessage = async (req: IAuthRequest, res: Response): Promise<voi
   }
 
   // Retrying with the same client ID returns the original message instead of storing a duplicate.
-  const findExisting = () =>
-    clientId ? Message.findOne({ conversation: conversation._id, sender, clientId }) : Promise.resolve(null);
+  const findExisting = async () => {
+    if (!clientId) return null;
+    const [row] = await db
+      .select(messageColumns)
+      .from(messagesTable)
+      .where(
+        and(
+          eq(messagesTable.conversationId, conversation.id),
+          eq(messagesTable.senderId, sender),
+          eq(messagesTable.clientId, clientId)
+        )
+      )
+      .limit(1);
+    return row ?? null;
+  };
+
   let message = await findExisting();
   let created = false;
   if (!message) {
     try {
-      message = await Message.create({ conversation: conversation._id, sender, content, ...(clientId && { clientId }) });
+      [message] = await db
+        .insert(messagesTable)
+        .values({ conversationId: conversation.id, senderId: sender, content, clientId: clientId ?? null })
+        .returning(messageColumns);
       created = true;
     } catch (error) {
       if (!isDuplicateKey(error)) throw error;
@@ -240,16 +277,16 @@ export const sendMessage = async (req: IAuthRequest, res: Response): Promise<voi
     return;
   }
 
-  const payload = { conversationId: conversation._id.toString(), message: message.toJSON() };
+  const payload = { conversationId: conversation.id, message };
   const io = getIo(req);
-  for (const id of conversation.participants) io.to(userRoom(id.toString())).emit('new_message', payload);
+  for (const id of await participantsOf(conversation.id)) io.to(userRoom(id)).emit('new_message', payload);
 
-  res.status(created ? 201 : 200).json({ success: true, data: { message: message.toJSON() } });
+  res.status(created ? 201 : 200).json({ success: true, data: { message } });
 };
 
 export const markConversationRead = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const me = req.user!._id;
-  const conversation = await findOwnConversation(req.params.id, me).select('participants').lean();
+  const me = req.user!.id;
+  const conversation = await findOwnConversation(req.params.id, me);
   if (!conversation) {
     res.status(404).json({ success: false, error: 'Conversation not found' });
     return;
@@ -257,27 +294,27 @@ export const markConversationRead = async (req: IAuthRequest, res: Response): Pr
 
   // Only messages up to the last one the reader actually saw are marked; anything newer stays unread.
   const { upTo } = markReadSchema.parse(req.body ?? {});
-  const watermark = await Message.findOne({ _id: upTo, conversation: conversation._id }).select('createdAt').lean();
+  const watermark = await findMessageIn(conversation.id, upTo);
   if (!watermark) {
     res.status(400).json({ success: false, error: 'Invalid message' });
     return;
   }
-  await Message.updateMany(
-    {
-      conversation: conversation._id,
-      sender: { $ne: me },
-      isRead: false,
-      $or: [{ createdAt: { $lt: watermark.createdAt } }, { createdAt: watermark.createdAt, _id: { $lte: watermark._id } }],
-    },
-    { $set: { isRead: true } }
-  );
+  await db
+    .update(messagesTable)
+    .set({ isRead: true })
+    .where(
+      and(
+        unreadIn(me, conversation.id),
+        or(
+          lt(messagesTable.createdAt, watermark.createdAt),
+          and(eq(messagesTable.createdAt, watermark.createdAt), lte(messagesTable.id, watermark.id))
+        )
+      )
+    );
 
   const io = getIo(req);
-  for (const id of conversation.participants) {
-    io.to(userRoom(id.toString())).emit('conversation_read', {
-      conversationId: conversation._id.toString(),
-      userId: me.toString(),
-    });
+  for (const id of await participantsOf(conversation.id)) {
+    io.to(userRoom(id)).emit('conversation_read', { conversationId: conversation.id, userId: me });
   }
   res.status(200).json({ success: true });
 };

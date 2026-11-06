@@ -1,12 +1,16 @@
-# Local development: only MongoDB, reachable from the host on 127.0.0.1:27017.
+# Local development without Neon: a Postgres reachable from the host on 127.0.0.1:5432.
 services:
-  mongodb:
-    image: mongo:7-jammy
+  postgres:
+    image: postgres:17-alpine
     restart: unless-stopped
+    environment:
+      POSTGRES_USER: friendster
+      POSTGRES_PASSWORD: friendster
+      POSTGRES_DB: friendster
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - mongodb_dev_data:/data/db
+      - postgres_dev_data:/var/lib/postgresql/data
 
 volumes:
-  mongodb_dev_data:
+  postgres_dev_data:
