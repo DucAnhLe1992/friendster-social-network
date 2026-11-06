@@ -156,8 +156,8 @@ export const apiClient = {
     files.forEach((file) => form.append('images', file));
     return unwrap(api.post<ApiResponse<{ images: string[] }>>('/posts/images', form, { timeout: 60000 })).then((d) => d.images);
   },
-  createPost: (content: string, images: string[]) =>
-    unwrap(api.post<ApiResponse<{ post: Post }>>('/posts', { content, images })).then((d) => d.post),
+  createPost: (content: string, images: string[], clientId: string) =>
+    unwrap(api.post<ApiResponse<{ post: Post }>>('/posts', { content, images, clientId })).then((d) => d.post),
   updatePost: (id: string, content: string) =>
     unwrap(api.put<ApiResponse<{ post: Post }>>(`/posts/${id}`, { content })).then((d) => d.post),
   deletePost: (id: string) => api.delete(`/posts/${id}`),

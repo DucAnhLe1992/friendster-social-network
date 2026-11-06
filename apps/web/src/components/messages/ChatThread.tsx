@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Send, Loader2, MessageSquareOff } from 'lucide-react';
+import { ArrowLeft, Send, Loader2, MessageSquareOff, RefreshCw } from 'lucide-react';
 import { format, isSameDay } from 'date-fns';
 
 import { Button } from '@/components/ui/button';
@@ -12,14 +12,15 @@ import { useRealtime } from '@/context/RealtimeContext';
 import { apiClient } from '@/lib/api';
 import type { Message } from '@/types';
 import { notifyError } from '@/lib/errors';
-import { mergeMessages, newClientId } from '@/lib/messageSync';
+import { mergeMessages } from '@/lib/messageSync';
+import { newClientId } from '@/lib/utils';
 
 const MAX = 1000;
 
 const ChatThread = ({ conversationId }: { conversationId: string }) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { socket, synced } = useRealtime();
+  const { socket, synced, liveBuffer } = useRealtime();
   const myId = useAuthStore((s) => s.user?._id);
 
   const [hasMore, setHasMore] = useState(false);
@@ -43,11 +44,12 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
   const messagesKey = ['messages', conversationId];
   const messages = useQuery({
     queryKey: messagesKey,
-    queryFn: async () => {
-      const res = await apiClient.getMessages(conversationId);
-      setHasMore(Boolean(res.meta.hasMore));
-      return res.messages;
-    },
+    queryFn: () =>
+      liveBuffer.snapshot(conversationId, async () => {
+        const res = await apiClient.getMessages(conversationId);
+        setHasMore(Boolean(res.meta.hasMore));
+        return res.messages;
+      }),
     staleTime: Infinity,
   });
 
@@ -202,6 +204,18 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
           <div className="flex justify-center py-10">
             <Loader2 className="w-6 h-6 animate-spin text-primary" />
           </div>
+        ) : messages.isError && !messages.data ? (
+          <EmptyState
+            icon={<MessageSquareOff className="w-7 h-7" />}
+            title="Messages couldn't be loaded"
+            description="Check your connection and try again."
+            action={
+              <Button variant="outline" onClick={() => messages.refetch()} disabled={messages.isFetching}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${messages.isFetching ? 'animate-spin' : ''}`} />
+                Try again
+              </Button>
+            }
+          />
         ) : list.length === 0 && other ? (
           <div className="flex flex-col items-center text-center py-12">
             <UserAvatar user={other} className="w-16 h-16 mb-3" />

@@ -4,7 +4,8 @@ import { Post, User, Comment, Notification } from '../models';
 import { createPostSchema, updatePostSchema, paginationSchema, profileTabSchema } from '../utils/validation';
 import { AUTHOR_FIELDS, withLikeStatus } from '../utils/serializers';
 import { uploadedPath } from '../middleware/upload';
-import { attachClaims, claimForPost, deletePostMedia, recordUploads, releaseClaims } from '../services/media';
+import { abortPublication, claimForPost, completePublication, deletePostMedia, recordUploads } from '../services/media';
+import { isDuplicateKey } from '../middleware/errorHandler';
 import { notify } from '../services/notifications';
 import { IApiResponse, IAuthRequest, IPost } from '../types';
 
@@ -71,41 +72,74 @@ export const uploadPostImages = async (req: IAuthRequest, res: Response): Promis
   res.status(201).json({ success: true, data: { images } });
 };
 
+const POST_CONFLICT = 'This post ID was already used for a different post';
+
+const samePayload = (post: Pick<IPost, 'content' | 'images'>, data: { content: string; images: string[] }) =>
+  post.content === data.content &&
+  post.images.length === data.images.length &&
+  post.images.every((image, i) => image === data.images[i]);
+
 export const createPost = async (req: IAuthRequest, res: Response): Promise<void> => {
   const data = createPostSchema.parse(req.body);
-  const postId = new Types.ObjectId();
+  const user = req.user!;
+  // Built from the signed-in user rather than looked up again, so nothing can fail after the post commits.
+  const author = { _id: user._id, handle: user.handle, displayName: user.displayName, avatar: user.avatar, isVerified: user.isVerified };
+  const send = (post: IPost, status: number) => {
+    // Internal publication fields are not part of the public post shape.
+    const rest = { ...post.toObject<IPost>(), status: undefined, clientId: undefined };
+    res.status(status).json({
+      success: true,
+      data: { post: withLikeStatus({ ...rest, author }, user._id.toString()) },
+      message: 'Post created successfully',
+    });
+  };
   const invalidImages = () =>
     res.status(400).json({ success: false, error: 'One or more images are invalid. Please upload them again.' });
-  if (!(await claimForPost(postId, req.user!._id, data.images))) {
-    invalidImages();
+
+  // A retry with the same client ID resolves to the original post instead of publishing a second copy.
+  const replayExisting = async (): Promise<boolean> => {
+    if (!data.clientId) return false;
+    const existing = await Post.findOne({ author: user._id, clientId: data.clientId }).setOptions({ includePending: true });
+    if (!existing) return false;
+    if (!samePayload(existing, data)) {
+      res.status(409).json({ success: false, error: POST_CONFLICT });
+    } else if (existing.status === 'published' || (await completePublication(existing._id, existing.images.length))) {
+      existing.status = 'published';
+      send(existing, 200);
+    } else {
+      res.status(409).json({ success: false, error: 'This post is still being published. Please try again shortly.' });
+    }
+    return true;
+  };
+
+  if (await replayExisting()) return;
+
+  const postId = new Types.ObjectId();
+  if (!(await claimForPost(postId, user._id, data.images))) {
+    // The images may be held by a concurrent request carrying the same client ID.
+    if (!(await replayExisting())) invalidImages();
     return;
   }
 
   let post;
-  let attached;
+  let published;
   try {
-    post = await Post.create({ ...data, _id: postId, author: req.user!._id });
-    attached = await attachClaims(postId, data.images.length);
+    post = await Post.create({ ...data, _id: postId, author: user._id, status: 'pending' });
+    published = await completePublication(postId, data.images.length);
   } catch (error) {
-    // The write may have landed even though it reported failure, so undo both halves before reporting the error.
-    await Post.deleteOne({ _id: postId }).catch(() => undefined);
-    await releaseClaims(postId).catch(() => undefined);
+    // The write may have landed even though it reported failure, so undo it unless it committed.
+    await abortPublication(postId).catch(() => undefined);
+    if (isDuplicateKey(error) && (await replayExisting())) return;
     throw error;
   }
-  if (!attached) {
-    // A claim expired before the post was finalized; never report success for a post whose images may be gone.
-    await Post.deleteOne({ _id: postId });
-    await releaseClaims(postId);
+  if (!published) {
+    // A claim expired or a reconciler aborted the post; never report success for a post whose images may be gone.
+    await abortPublication(postId);
     invalidImages();
     return;
   }
-  await post.populate('author', AUTHOR_FIELDS);
-
-  res.status(201).json({
-    success: true,
-    data: { post: withLikeStatus(post.toObject(), req.user!._id.toString()) },
-    message: 'Post created successfully',
-  });
+  post.status = 'published';
+  send(post, 201);
 };
 
 export const updatePost = async (req: IAuthRequest, res: Response): Promise<void> => {

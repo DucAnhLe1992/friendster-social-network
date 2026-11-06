@@ -46,21 +46,55 @@ export const releaseClaims = async (postId: Types.ObjectId): Promise<void> => {
   await Media.updateMany({ post: postId }, { $set: { post: null, state: 'unclaimed', claimedAt: null } });
 };
 
+const findAnyPost = (filter: Record<string, unknown>) =>
+  Post.findOne(filter).setOptions({ includePending: true }).select('status images').lean();
+
+/**
+ * The commit point of publication: flips a pending post to published. Returns false if a reconciler aborted the post
+ * first. Safe to call more than once; a post another caller already published counts as success.
+ */
+export const publishPost = async (postId: Types.ObjectId): Promise<boolean> => {
+  await Post.updateOne({ _id: postId, status: 'pending' }, { $set: { status: 'published' } });
+  return Boolean(await Post.exists({ _id: postId, status: 'published' }));
+};
+
+/** Finishes a pending post's publication if every one of its images is still available. */
+export const completePublication = async (postId: Types.ObjectId, imageCount: number): Promise<boolean> =>
+  (await attachClaims(postId, imageCount)) && (await publishPost(postId));
+
+/** Undoes a publication that did not commit. A post that did get published is left untouched. */
+export const abortPublication = async (postId: Types.ObjectId): Promise<void> => {
+  await Post.deleteOne({ _id: postId, status: 'pending' });
+  if (await findAnyPost({ _id: postId })) return;
+  await releaseClaims(postId);
+};
+
 /** Removes a deleted post's images, keeping any file another post still references (pre-media legacy data). */
 export const deletePostMedia = async (postId: Types.ObjectId, paths: string[]): Promise<void> => {
   await Media.deleteMany({ post: postId });
   await Promise.all(
     paths.map(async (path) => {
-      if (!(await Post.exists({ images: path }))) await removeUpload(path);
+      if (!(await findAnyPost({ images: path }))) await removeUpload(path);
     })
   );
 };
 
+/** Completes or aborts posts whose publication was interrupted; neither outcome ever exposes missing images. */
+const reconcilePendingPosts = async (leaseMs: number) => {
+  const stale = await Post.find({ status: 'pending', createdAt: { $lt: new Date(Date.now() - leaseMs) } })
+    .select('images')
+    .lean();
+  for (const { _id, images } of stale) {
+    if (!(await completePublication(_id, images.length))) await abortPublication(_id);
+  }
+};
+
 /**
- * Deletes uploads never used within `maxAgeMs`, and claims whose post was never saved within `leaseMs` of claiming.
- * Every deletion is conditional on the record still being in the state it was selected in.
+ * Settles interrupted publications, then deletes uploads never used within `maxAgeMs` and claims whose post was
+ * never saved within `leaseMs` of claiming. Every deletion is conditional on the record's state when selected.
  */
 export const sweepAbandonedUploads = async (maxAgeMs: number, leaseMs = CLAIM_LEASE_MS): Promise<number> => {
+  await reconcilePendingPosts(leaseMs);
   const now = Date.now();
   const unclaimed = await Media.find({ post: null, createdAt: { $lt: new Date(now - maxAgeMs) } })
     .select('path')
@@ -79,8 +113,10 @@ export const sweepAbandonedUploads = async (maxAgeMs: number, leaseMs = CLAIM_LE
 
   for (const { _id, path } of unclaimed) await remove({ _id, post: null }, path);
   for (const { _id, path, post, claimedAt } of expired) {
-    // The post was saved but the process stopped before finalizing: finish the attach instead of deleting.
-    if (await Post.exists({ _id: post })) {
+    const owner = await findAnyPost({ _id: post });
+    // A pending post is still being published (or will be settled by the next reconcile); leave its images alone.
+    if (owner?.status === 'pending') continue;
+    if (owner) {
       await Media.updateOne({ _id, state: 'claimed' }, { $set: { state: 'attached' } });
       continue;
     }

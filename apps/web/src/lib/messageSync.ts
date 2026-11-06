@@ -1,3 +1,4 @@
+import axios from 'axios';
 import type { QueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/lib/api';
 import type { Message } from '@/types';
@@ -16,28 +17,61 @@ export const mergeMessages = (old: Message[] | undefined, incoming: Message[]): 
   return fresh.length ? [...old, ...fresh].sort(compare) : old;
 };
 
-/** Applies a live message; a thread still loading is refetched, since its in-flight response may predate the message. */
-export const applyLiveMessage = (queryClient: QueryClient, conversationId: string, message: Message) => {
-  const key = ['messages', conversationId];
-  const state = queryClient.getQueryState<Message[]>(key);
-  if (state && state.data === undefined && state.fetchStatus === 'fetching') {
-    queryClient.invalidateQueries({ queryKey: key, exact: true });
-    return;
+/**
+ * Holds live messages that arrive while a thread snapshot is being fetched. A snapshot replaces the cached list
+ * wholesale and may have been read before those messages existed, so they are merged back into its result.
+ */
+export class LiveBuffer {
+  private seq = 0;
+  private readonly entries = new Map<string, { seq: number; message: Message }[]>();
+  private readonly inFlight = new Map<string, number[]>();
+
+  record(conversationId: string, message: Message) {
+    if (!this.inFlight.get(conversationId)?.length) return;
+    const list = this.entries.get(conversationId) ?? [];
+    list.push({ seq: ++this.seq, message });
+    this.entries.set(conversationId, list);
   }
-  queryClient.setQueryData<Message[]>(key, (old) => mergeMessages(old, [message]));
+
+  async snapshot(conversationId: string, load: () => Promise<Message[]>): Promise<Message[]> {
+    const mark = this.seq;
+    const marks = this.inFlight.get(conversationId) ?? [];
+    marks.push(mark);
+    this.inFlight.set(conversationId, marks);
+    try {
+      const messages = await load();
+      const live = (this.entries.get(conversationId) ?? []).filter((e) => e.seq > mark).map((e) => e.message);
+      return mergeMessages(messages, live) ?? messages;
+    } finally {
+      this.release(conversationId, mark);
+    }
+  }
+
+  private release(conversationId: string, mark: number) {
+    const marks = this.inFlight.get(conversationId) ?? [];
+    marks.splice(marks.indexOf(mark), 1);
+    if (!marks.length) {
+      this.inFlight.delete(conversationId);
+      this.entries.delete(conversationId);
+      return;
+    }
+    const oldest = Math.min(...marks);
+    this.entries.set(conversationId, (this.entries.get(conversationId) ?? []).filter((e) => e.seq > oldest));
+  }
+}
+
+export const applyLiveMessage = (
+  queryClient: QueryClient,
+  buffer: LiveBuffer,
+  conversationId: string,
+  message: Message
+) => {
+  buffer.record(conversationId, message);
+  queryClient.setQueryData<Message[]>(['messages', conversationId], (old) => mergeMessages(old, [message]));
 };
 
 /** `null` means the thread had no messages (or was still loading) and must be reloaded rather than paged forward. */
 export type SyncCursors = Map<string, string | null>;
-
-/** UUID v4 that also works outside secure contexts, where `crypto.randomUUID` is unavailable. */
-export const newClientId = (): string => {
-  const b = crypto.getRandomValues(new Uint8Array(16));
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  const hex = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-};
 
 /** Where every loaded (or loading) thread currently ends, including empty ones. */
 export const snapshotCursors = (queryClient: QueryClient): SyncCursors => {
@@ -53,8 +87,14 @@ export const snapshotCursors = (queryClient: QueryClient): SyncCursors => {
 export const mergeCursors = (current: SyncCursors, earliest: SyncCursors | undefined): SyncCursors =>
   new Map([...current, ...(earliest ?? [])]);
 
+/** A thread the server refuses outright (gone, forbidden) will not recover by retrying; it shows its own error. */
+const isRetryable = (error: unknown) => {
+  const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+  return status === undefined || status >= 500 || status === 408 || status === 429;
+};
+
 const reload = (queryClient: QueryClient, conversationId: string) =>
-  queryClient.resetQueries({ queryKey: ['messages', conversationId], exact: true }).catch(() => undefined);
+  queryClient.resetQueries({ queryKey: ['messages', conversationId], exact: true }, { throwOnError: true });
 
 const fillGap = async (queryClient: QueryClient, conversationId: string, cursor: string) => {
   let after = cursor;
@@ -68,20 +108,35 @@ const fillGap = async (queryClient: QueryClient, conversationId: string, cursor:
   throw new Error('Gap too large');
 };
 
-/** Fills every loaded thread from where it left off, so nothing sent while offline or before connecting is skipped. */
-export const catchUp = async (queryClient: QueryClient, cursors: SyncCursors) => {
+const syncThread = async (queryClient: QueryClient, conversationId: string, cursor: string | null) => {
+  const loaded = queryClient.getQueryData(['messages', conversationId]) !== undefined;
+  if (cursor && loaded) {
+    try {
+      await fillGap(queryClient, conversationId, cursor);
+      return;
+    } catch {
+      // Falling back to the newest page keeps the thread gap-free; older history stays reachable by scrolling.
+    }
+  }
+  await reload(queryClient, conversationId);
+};
+
+/**
+ * Fills every thread from where it left off. Resolves with the cursors of threads that could not be reconciled,
+ * so the caller can keep them and retry; an empty result means everything is in sync.
+ */
+export const catchUp = async (queryClient: QueryClient, cursors: SyncCursors): Promise<SyncCursors> => {
+  const failed: SyncCursors = new Map();
   await Promise.all(
     [...cursors].map(([conversationId, cursor]) =>
-      cursor
-        ? fillGap(queryClient, conversationId, cursor).catch(() =>
-            // Falling back to the newest page keeps the thread gap-free; older history stays reachable by scrolling.
-            reload(queryClient, conversationId)
-          )
-        : reload(queryClient, conversationId)
+      syncThread(queryClient, conversationId, cursor).catch((error) => {
+        if (isRetryable(error)) failed.set(conversationId, cursor);
+      })
     )
   );
   queryClient.invalidateQueries({ queryKey: ['conversations'] });
   queryClient.invalidateQueries({ queryKey: ['conversation'] });
   queryClient.invalidateQueries({ queryKey: ['notifications'] });
   queryClient.invalidateQueries({ queryKey: ['unread'] });
+  return failed;
 };

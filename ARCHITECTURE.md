@@ -139,10 +139,17 @@ friendster-modern/
   commentsCount: number
   sharesCount: number
   isEdited: boolean
+  status: 'pending' | 'published'   // pending posts are hidden from every query
+  clientId?: string                  // unique per author; makes retried publishes idempotent
   createdAt: Date
   updatedAt: Date
 }
 ```
+
+Publishing is a two-step commit: the post is saved as `pending`, its images are attached, and only then is it
+flipped to `published`. A retry carrying the same `clientId` returns the original post (409 if the content
+differs). The hourly sweep completes or removes `pending` posts older than the 15-minute claim lease, so an
+interrupted publish can never surface a post whose images were cleaned up.
 
 ### Comments
 ```typescript

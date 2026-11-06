@@ -1,11 +1,14 @@
-import { QueryClient } from '@tanstack/react-query';
+import { AxiosError, type AxiosResponse } from 'axios';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '@/types';
 
 const getMessages = vi.fn();
 vi.mock('@/lib/api', () => ({ apiClient: { getMessages: (...args: unknown[]) => getMessages(...args) } }));
 
-const { catchUp, mergeCursors, mergeMessages, newClientId, snapshotCursors } = await import('@/lib/messageSync');
+const { applyLiveMessage, catchUp, LiveBuffer, mergeCursors, mergeMessages, snapshotCursors } =
+  await import('@/lib/messageSync');
+const { newClientId } = await import('@/lib/utils');
 
 const msg = (id: string, at: number): Message => ({
   _id: id,
@@ -18,6 +21,27 @@ const msg = (id: string, at: number): Message => ({
 
 const page = (messages: Message[], hasMore = false) => ({ messages, meta: { hasMore } });
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+};
+
+const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+/** Mounts a thread the way the chat screen does: an active observer whose loads go through the live buffer. */
+const mountThread = (qc: QueryClient, buffer: InstanceType<typeof LiveBuffer>, load: () => Promise<Message[]>) => {
+  const observer = new QueryObserver<Message[]>(qc, {
+    queryKey: ['messages', 'c1'],
+    queryFn: () => buffer.snapshot('c1', load),
+    staleTime: Infinity,
+  });
+  const unsubscribe = observer.subscribe(() => undefined);
+  return { observer, unsubscribe };
+};
+
+const ids = (qc: QueryClient) => qc.getQueryData<Message[]>(['messages', 'c1'])?.map((m) => m._id);
+
 describe('mergeMessages', () => {
   it('drops duplicates and orders by time, then by id', () => {
     const merged = mergeMessages([msg('b', 1), msg('d', 3)], [msg('d', 3), msg('a', 1), msg('c', 2)]);
@@ -29,9 +53,48 @@ describe('mergeMessages', () => {
   });
 });
 
+describe('live messages during a load', () => {
+  it('keeps a message that arrives while the first load is still running', async () => {
+    const qc = client();
+    const buffer = new LiveBuffer();
+    const response = deferred<Message[]>();
+    const { unsubscribe } = mountThread(qc, buffer, () => response.promise);
+
+    applyLiveMessage(qc, buffer, 'c1', msg('live', 5));
+    response.resolve([]);
+    await vi.waitFor(() => expect(ids(qc)).toEqual(['live']));
+    unsubscribe();
+  });
+
+  it('keeps a message that arrives while a refresh is replacing the list', async () => {
+    const qc = client();
+    const buffer = new LiveBuffer();
+    qc.setQueryData(['messages', 'c1'], [msg('old', 1)]);
+    const response = deferred<Message[]>();
+    const { observer, unsubscribe } = mountThread(qc, buffer, () => response.promise);
+
+    const refetch = observer.refetch();
+    applyLiveMessage(qc, buffer, 'c1', msg('live', 5));
+    response.resolve([msg('old', 1)]);
+    await refetch;
+
+    expect(ids(qc)).toEqual(['old', 'live']);
+    unsubscribe();
+  });
+
+  it('does not hold on to messages once no load is running', async () => {
+    const qc = client();
+    const buffer = new LiveBuffer();
+    applyLiveMessage(qc, buffer, 'c1', msg('early', 1));
+    const { unsubscribe } = mountThread(qc, buffer, async () => [msg('newest', 9)]);
+    await vi.waitFor(() => expect(ids(qc)).toEqual(['newest']));
+    unsubscribe();
+  });
+});
+
 describe('cursors', () => {
   it('records empty threads so they are reloaded after reconnecting', () => {
-    const qc = new QueryClient();
+    const qc = client();
     qc.setQueryData(['messages', 'full'], [msg('a', 1), msg('b', 2)]);
     qc.setQueryData(['messages', 'empty'], []);
     expect(snapshotCursors(qc)).toEqual(new Map([['full', 'b'], ['empty', null]]));
@@ -49,36 +112,61 @@ describe('catchUp', () => {
   });
 
   it('pages forward through everything missed', async () => {
-    const qc = new QueryClient();
+    const qc = client();
     qc.setQueryData(['messages', 'c1'], [msg('a', 1)]);
     getMessages
       .mockResolvedValueOnce(page([msg('b', 2)], true))
       .mockResolvedValueOnce(page([msg('c', 3)]));
 
-    await catchUp(qc, new Map([['c1', 'a']]));
+    const failed = await catchUp(qc, new Map([['c1', 'a']]));
 
+    expect(failed.size).toBe(0);
     expect(getMessages).toHaveBeenNthCalledWith(1, 'c1', { after: 'a' });
     expect(getMessages).toHaveBeenNthCalledWith(2, 'c1', { after: 'b' });
-    expect(qc.getQueryData<Message[]>(['messages', 'c1'])?.map((m) => m._id)).toEqual(['a', 'b', 'c']);
+    expect(ids(qc)).toEqual(['a', 'b', 'c']);
   });
 
-  it('reloads a thread that was empty instead of paging from nowhere', async () => {
-    const qc = new QueryClient();
-    qc.setQueryData(['messages', 'c1'], []);
+  it('reloads an open thread that was empty', async () => {
+    const qc = client();
+    const buffer = new LiveBuffer();
+    let calls = 0;
+    const { unsubscribe } = mountThread(qc, buffer, async () => (calls++ === 0 ? [] : [msg('first', 5)]));
+    await vi.waitFor(() => expect(ids(qc)).toEqual([]));
 
-    await catchUp(qc, new Map([['c1', null]]));
+    const failed = await catchUp(qc, new Map([['c1', null]]));
 
+    expect(failed.size).toBe(0);
     expect(getMessages).not.toHaveBeenCalled();
-    expect(qc.getQueryState(['messages', 'c1'])?.data).toBeUndefined();
+    expect(ids(qc)).toEqual(['first']);
+    unsubscribe();
   });
 
-  it('still finishes when the server cannot be reached', async () => {
-    const qc = new QueryClient();
-    qc.setQueryData(['messages', 'c1'], [msg('a', 1)]);
-    getMessages.mockImplementation(async () => {
+  it('reports a thread it could not reconcile and keeps its earliest position', async () => {
+    const qc = client();
+    const offline = async (): Promise<never> => {
       throw new Error('offline');
-    });
-    await expect(catchUp(qc, new Map([['c1', 'a']]))).resolves.toBeUndefined();
+    };
+    qc.setQueryData(['messages', 'c1'], [msg('a', 1)]);
+    const { unsubscribe } = mountThread(qc, new LiveBuffer(), offline);
+    getMessages.mockImplementation(offline);
+
+    const failed = await catchUp(qc, new Map([['c1', 'a']]));
+
+    expect(failed).toEqual(new Map([['c1', 'a']]));
+    unsubscribe();
+  });
+
+  it('does not keep retrying a thread the server refuses', async () => {
+    const qc = client();
+    const gone = async (): Promise<never> => {
+      throw new AxiosError('Not found', 'ERR_BAD_REQUEST', undefined, undefined, { status: 404 } as AxiosResponse);
+    };
+    qc.setQueryData(['messages', 'c1'], [msg('a', 1)]);
+    const { unsubscribe } = mountThread(qc, new LiveBuffer(), gone);
+    getMessages.mockImplementation(gone);
+
+    expect((await catchUp(qc, new Map([['c1', 'a']]))).size).toBe(0);
+    unsubscribe();
   });
 });
 
