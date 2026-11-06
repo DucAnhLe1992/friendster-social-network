@@ -3,7 +3,7 @@ import { io, type Socket } from 'socket.io-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiClient, SERVER_ORIGIN } from '@/lib/api';
-import { catchUp, mergeMessages, snapshotCursors, type SyncCursors } from '@/lib/messageSync';
+import { applyLiveMessage, catchUp, mergeCursors, snapshotCursors, type SyncCursors } from '@/lib/messageSync';
 import { useAuthStore } from '@/store/authStore';
 import type { Message, Notification } from '@/types';
 
@@ -23,11 +23,11 @@ export type RealtimeSocket = Socket<ServerEvents, ClientEvents>;
 
 interface RealtimeState {
   socket: RealtimeSocket | null;
-  /** False while reconnecting or filling in messages missed during an outage. */
+  /** False until the socket is connected and every loaded thread has been reconciled with the server. */
   synced: boolean;
 }
 
-const RealtimeContext = createContext<RealtimeState>({ socket: null, synced: true });
+const RealtimeContext = createContext<RealtimeState>({ socket: null, synced: false });
 
 const NOTIFICATION_TEXT: Record<Notification['type'], string> = {
   like: 'liked your post',
@@ -42,7 +42,7 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
   const myId = useAuthStore((s) => s.user?._id);
   const queryClient = useQueryClient();
   const [socket, setSocket] = useState<RealtimeSocket | null>(null);
-  const [synced, setSynced] = useState(true);
+  const [synced, setSynced] = useState(false);
   const gap = useRef<{ userId: string | undefined; cursors: SyncCursors } | null>(null);
 
   useEffect(() => {
@@ -65,7 +65,7 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
     });
 
     next.on('new_message', ({ conversationId, message }) => {
-      queryClient.setQueryData<Message[]>(['messages', conversationId], (old) => mergeMessages(old, [message]));
+      applyLiveMessage(queryClient, conversationId, message);
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
       if (message.sender !== myId) queryClient.invalidateQueries({ queryKey: ['unread', 'messages'] });
     });
@@ -74,17 +74,20 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
       queryClient.invalidateQueries({ queryKey: ['unread', 'messages'] });
     });
 
+    // Every connection, including the first, is a sync boundary: messages sent between a thread's HTTP load and the
+    // socket subscribing would otherwise never arrive. Outage cursors are kept until a catch-up fully succeeds.
     next.on('connect', () => {
       setSocket(next);
-      const pending = gap.current;
-      if (!pending || pending.userId !== myId) {
+      const previous = gap.current;
+      const outage = previous && previous.userId === myId ? previous.cursors : undefined;
+      const pending = { userId: myId, cursors: mergeCursors(snapshotCursors(queryClient), outage) };
+      gap.current = pending;
+      setSynced(false);
+      catchUp(queryClient, pending.cursors).then(() => {
+        // A drop during catch-up keeps these cursors as the gap for the next connection.
+        if (gap.current !== pending || !next.connected) return;
         gap.current = null;
         setSynced(true);
-        return;
-      }
-      catchUp(queryClient, pending.cursors).then(() => {
-        if (gap.current === pending) gap.current = null;
-        if (next.connected) setSynced(true);
       });
     });
     next.on('disconnect', (reason) => {

@@ -82,13 +82,17 @@ export const createPost = async (req: IAuthRequest, res: Response): Promise<void
   }
 
   let post;
+  let attached;
   try {
     post = await Post.create({ ...data, _id: postId, author: req.user!._id });
+    attached = await attachClaims(postId, data.images.length);
   } catch (error) {
-    await releaseClaims(postId);
+    // The write may have landed even though it reported failure, so undo both halves before reporting the error.
+    await Post.deleteOne({ _id: postId }).catch(() => undefined);
+    await releaseClaims(postId).catch(() => undefined);
     throw error;
   }
-  if (!(await attachClaims(postId, data.images.length))) {
+  if (!attached) {
     // A claim expired before the post was finalized; never report success for a post whose images may be gone.
     await Post.deleteOne({ _id: postId });
     await releaseClaims(postId);

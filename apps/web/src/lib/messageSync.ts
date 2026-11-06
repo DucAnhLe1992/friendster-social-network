@@ -16,7 +16,19 @@ export const mergeMessages = (old: Message[] | undefined, incoming: Message[]): 
   return fresh.length ? [...old, ...fresh].sort(compare) : old;
 };
 
-export type SyncCursors = Map<string, string>;
+/** Applies a live message; a thread still loading is refetched, since its in-flight response may predate the message. */
+export const applyLiveMessage = (queryClient: QueryClient, conversationId: string, message: Message) => {
+  const key = ['messages', conversationId];
+  const state = queryClient.getQueryState<Message[]>(key);
+  if (state && state.data === undefined && state.fetchStatus === 'fetching') {
+    queryClient.invalidateQueries({ queryKey: key, exact: true });
+    return;
+  }
+  queryClient.setQueryData<Message[]>(key, (old) => mergeMessages(old, [message]));
+};
+
+/** `null` means the thread had no messages (or was still loading) and must be reloaded rather than paged forward. */
+export type SyncCursors = Map<string, string | null>;
 
 /** UUID v4 that also works outside secure contexts, where `crypto.randomUUID` is unavailable. */
 export const newClientId = (): string => {
@@ -27,15 +39,22 @@ export const newClientId = (): string => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
 
-/** Last message each loaded thread had when the connection dropped. */
+/** Where every loaded (or loading) thread currently ends, including empty ones. */
 export const snapshotCursors = (queryClient: QueryClient): SyncCursors => {
   const cursors: SyncCursors = new Map();
   for (const [key, data] of queryClient.getQueriesData<Message[]>({ queryKey: ['messages'] })) {
-    const last = data?.[data.length - 1];
-    if (typeof key[1] === 'string' && last) cursors.set(key[1], last._id);
+    if (typeof key[1] !== 'string') continue;
+    cursors.set(key[1], data?.[data.length - 1]?._id ?? null);
   }
   return cursors;
 };
+
+/** Cursors recorded at the start of an outage win over current ones, which may already include later live messages. */
+export const mergeCursors = (current: SyncCursors, earliest: SyncCursors | undefined): SyncCursors =>
+  new Map([...current, ...(earliest ?? [])]);
+
+const reload = (queryClient: QueryClient, conversationId: string) =>
+  queryClient.resetQueries({ queryKey: ['messages', conversationId], exact: true }).catch(() => undefined);
 
 const fillGap = async (queryClient: QueryClient, conversationId: string, cursor: string) => {
   let after = cursor;
@@ -49,14 +68,16 @@ const fillGap = async (queryClient: QueryClient, conversationId: string, cursor:
   throw new Error('Gap too large');
 };
 
-/** Fills every loaded thread from where it left off, so nothing sent while offline is skipped. */
+/** Fills every loaded thread from where it left off, so nothing sent while offline or before connecting is skipped. */
 export const catchUp = async (queryClient: QueryClient, cursors: SyncCursors) => {
   await Promise.all(
     [...cursors].map(([conversationId, cursor]) =>
-      fillGap(queryClient, conversationId, cursor).catch(() =>
-        // Falling back to the newest page keeps the thread gap-free; older history stays reachable by scrolling.
-        queryClient.resetQueries({ queryKey: ['messages', conversationId], exact: true })
-      )
+      cursor
+        ? fillGap(queryClient, conversationId, cursor).catch(() =>
+            // Falling back to the newest page keeps the thread gap-free; older history stays reachable by scrolling.
+            reload(queryClient, conversationId)
+          )
+        : reload(queryClient, conversationId)
     )
   );
   queryClient.invalidateQueries({ queryKey: ['conversations'] });

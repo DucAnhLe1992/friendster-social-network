@@ -235,6 +235,10 @@ export const sendMessage = async (req: IAuthRequest, res: Response): Promise<voi
       if (!message) throw error;
     }
   }
+  if (!created && message.content !== content) {
+    res.status(409).json({ success: false, error: 'This message ID was already used for a different message' });
+    return;
+  }
 
   const payload = { conversationId: conversation._id.toString(), message: message.toJSON() };
   const io = getIo(req);

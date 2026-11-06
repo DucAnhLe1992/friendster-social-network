@@ -27,6 +27,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const pendingClientId = useRef<{ content: string; id: string } | null>(null);
+  const draftRevision = useRef(0);
   const [otherTyping, setOtherTyping] = useState(false);
 
   const scroller = useRef<HTMLDivElement>(null);
@@ -107,6 +108,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
   useEffect(() => stopTyping, [conversationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onDraftChange = (value: string) => {
+    draftRevision.current += 1;
     setDraft(value);
     if (!socket) return;
     if (!isTyping.current && value.trim()) {
@@ -123,7 +125,7 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
     try {
       const res = await apiClient.getMessages(conversationId, { before: list[0]._id });
       if (scroller.current) keepOffset.current = scroller.current.scrollHeight - scroller.current.scrollTop;
-      queryClient.setQueryData<Message[]>(messagesKey, (old = []) => [...res.messages, ...old]);
+      queryClient.setQueryData<Message[]>(messagesKey, (old) => mergeMessages(res.messages, old ?? []) ?? old);
       setHasMore(Boolean(res.meta.hasMore));
     } catch (error) {
       notifyError(error, 'Could not load older messages');
@@ -137,13 +139,14 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
     if (!content || sending || content.length > MAX) return;
     setSending(true);
     stopTyping();
+    const revision = draftRevision.current;
     try {
       // Reuse the ID when resending the same text after a failure, so the server never stores it twice.
       if (pendingClientId.current?.content !== content) pendingClientId.current = { content, id: newClientId() };
       const message = await apiClient.sendMessage(conversationId, content, pendingClientId.current.id);
       pendingClientId.current = null;
       queryClient.setQueryData<Message[]>(messagesKey, (old = []) => mergeMessages(old, [message]) ?? old);
-      setDraft('');
+      if (draftRevision.current === revision) setDraft('');
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     } catch (error) {
       notifyError(error, 'Message not sent');
