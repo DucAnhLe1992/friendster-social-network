@@ -44,9 +44,9 @@ const ChatThread = ({ conversationId }: { conversationId: string }) => {
   const messagesKey = ['messages', conversationId];
   const messages = useQuery({
     queryKey: messagesKey,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       liveBuffer.snapshot(conversationId, async () => {
-        const res = await apiClient.getMessages(conversationId);
+        const res = await apiClient.getMessages(conversationId, undefined, signal);
         setHasMore(Boolean(res.meta.hasMore));
         return res.messages;
       }),
