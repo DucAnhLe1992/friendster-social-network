@@ -1,7 +1,18 @@
 import { Response, NextFunction } from 'express';
 import { verifyAccessToken } from '../utils/jwt';
-import { User } from '../models';
-import { IAuthRequest } from '../types';
+import { eq, getTableColumns } from 'drizzle-orm';
+import { db } from '../database/db';
+import { usersTable } from '../database/schema';
+import { AuthUser, IAuthRequest } from '../types';
+
+const userColumns = Object.fromEntries(
+  Object.entries(getTableColumns(usersTable)).filter(([key]) => key !== 'password')
+) as Omit<ReturnType<typeof getTableColumns<typeof usersTable>>, 'password'>;
+
+const loadUser = async (id: string): Promise<AuthUser | null> => {
+  const [user] = await db.select(userColumns).from(usersTable).where(eq(usersTable.id, id)).limit(1);
+  return user ?? null;
+};
 
 export const authenticate = async (
   req: IAuthRequest,
@@ -25,7 +36,7 @@ export const authenticate = async (
     
     const decoded = verifyAccessToken(token);
     
-    const user = await User.findById(decoded.userId).select('-password');
+    const user = await loadUser(decoded.userId);
     
     if (!user) {
       res.status(401).json({ success: false, error: 'User not found' });
@@ -64,7 +75,7 @@ export const optionalAuth = async (
     }
     
     const decoded = verifyAccessToken(token);
-    const user = await User.findById(decoded.userId).select('-password');
+    const user = await loadUser(decoded.userId);
     
     if (user) {
       req.user = user;

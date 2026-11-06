@@ -1,60 +1,69 @@
 import { Response } from 'express';
-import { Types } from 'mongoose';
-import { Comment, Post, Notification } from '../models';
+import { and, asc, count, desc, eq, isNull, or, sql, SQL } from 'drizzle-orm';
+import { db } from '../database/db';
+import { commentLikesTable, commentsTable, postsTable, usersTable } from '../database/schema';
 import { createCommentSchema, updateCommentSchema, paginationSchema } from '../utils/validation';
-import { AUTHOR_FIELDS, withLikeStatus } from '../utils/serializers';
+import { publicCommentColumns } from '../utils/serializers';
 import { notify } from '../services/notifications';
 import { IApiResponse, IAuthRequest } from '../types';
 
-const replyCounts = async (ids: Types.ObjectId[]): Promise<Map<string, number>> => {
-  const rows = await Comment.aggregate<{ _id: Types.ObjectId; count: number }>([
-    { $match: { parentComment: { $in: ids } } },
-    { $group: { _id: '$parentComment', count: { $sum: 1 } } },
-  ]);
-  return new Map(rows.map((r) => [r._id.toString(), r.count]));
+const selectComments = (viewerId?: string) =>
+  db
+    .select(publicCommentColumns(viewerId))
+    .from(commentsTable)
+    .innerJoin(usersTable, eq(usersTable.id, commentsTable.authorId));
+
+const findComment = async (id: string, viewerId?: string) => {
+  const [comment] = await selectComments(viewerId).where(eq(commentsTable.id, id)).limit(1);
+  return comment ?? null;
 };
 
 const listComments = async (
   req: IAuthRequest,
   res: Response,
-  query: Record<string, unknown>,
-  sort: 1 | -1,
+  where: SQL,
+  newestFirst: boolean,
   key: 'comments' | 'replies'
 ): Promise<void> => {
   const { page, limit } = paginationSchema.parse(req.query);
-  const skip = (page - 1) * limit;
+  const offset = (page - 1) * limit;
+  const order = newestFirst ? desc : asc;
 
-  const [comments, total] = await Promise.all([
-    Comment.find(query).sort({ createdAt: sort }).skip(skip).limit(limit).populate('author', AUTHOR_FIELDS).lean(),
-    Comment.countDocuments(query),
+  const [comments, [{ total }]] = await Promise.all([
+    selectComments(req.user?.id)
+      .where(where)
+      .orderBy(order(commentsTable.createdAt), order(commentsTable.id))
+      .limit(limit)
+      .offset(offset),
+    db.select({ total: count() }).from(commentsTable).where(where),
   ]);
-
-  const counts = key === 'comments' ? await replyCounts(comments.map((c) => c._id)) : new Map<string, number>();
-  const viewerId = req.user?._id.toString();
 
   const response: IApiResponse = {
     success: true,
-    data: {
-      [key]: comments.map((c) => ({ ...withLikeStatus(c, viewerId), replyCount: counts.get(c._id.toString()) ?? 0 })),
-    },
-    meta: { page, limit, total, hasMore: skip + comments.length < total },
+    data: { [key]: key === 'replies' ? comments.map((c) => ({ ...c, replyCount: 0 })) : comments },
+    meta: { page, limit, total, hasMore: offset + comments.length < total },
   };
   res.status(200).json(response);
 };
 
 export const getComments = async (req: IAuthRequest, res: Response): Promise<void> => {
-  await listComments(req, res, { post: req.params.id, parentComment: null }, -1, 'comments');
+  await listComments(req, res, and(eq(commentsTable.postId, req.params.id), isNull(commentsTable.parentId))!, true, 'comments');
 };
 
 export const getReplies = async (req: IAuthRequest, res: Response): Promise<void> => {
-  await listComments(req, res, { post: req.params.id, parentComment: req.params.commentId }, 1, 'replies');
+  const where = and(eq(commentsTable.postId, req.params.id), eq(commentsTable.parentId, req.params.commentId))!;
+  await listComments(req, res, where, false, 'replies');
 };
 
 export const createComment = async (req: IAuthRequest, res: Response): Promise<void> => {
   const data = createCommentSchema.parse(req.body);
-  const userId = req.user!._id;
+  const me = req.user!.id;
 
-  const post = await Post.findById(req.params.id).select('author');
+  const [post] = await db
+    .select({ id: postsTable.id, authorId: postsTable.authorId })
+    .from(postsTable)
+    .where(eq(postsTable.id, req.params.id))
+    .limit(1);
   if (!post) {
     res.status(404).json({ success: false, error: 'Post not found' });
     return;
@@ -62,104 +71,119 @@ export const createComment = async (req: IAuthRequest, res: Response): Promise<v
 
   let parent = null;
   if (data.parentComment) {
-    parent = await Comment.findOne({ _id: data.parentComment, post: post._id }).select('author parentComment');
+    [parent] = await db
+      .select({ id: commentsTable.id, authorId: commentsTable.authorId, parentId: commentsTable.parentId })
+      .from(commentsTable)
+      .where(and(eq(commentsTable.id, data.parentComment), eq(commentsTable.postId, post.id)))
+      .limit(1);
     if (!parent) {
       res.status(404).json({ success: false, error: 'Comment not found' });
       return;
     }
   }
 
-  // Replies to replies attach to the top-level thread
-  const parentId = parent ? parent.parentComment ?? parent._id : null;
-
-  const comment = await Comment.create({
-    content: data.content,
-    post: post._id,
-    author: userId,
-    parentComment: parentId,
+  const created = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(commentsTable)
+      .values({
+        content: data.content,
+        postId: post.id,
+        authorId: me,
+        // Replies to replies attach to the top-level thread
+        parentId: parent ? parent.parentId ?? parent.id : null,
+      })
+      .returning({ id: commentsTable.id });
+    await tx
+      .update(postsTable)
+      .set({ commentsCount: sql`${postsTable.commentsCount} + 1` })
+      .where(eq(postsTable.id, post.id));
+    return row;
   });
-  await Post.updateOne({ _id: post._id }, { $inc: { commentsCount: 1 } });
-  await comment.populate('author', AUTHOR_FIELDS);
 
-  await notify(req, { recipient: post.author as Types.ObjectId, sender: userId, type: 'comment', post: post._id, comment: comment._id });
-  if (parent && !(parent.author as Types.ObjectId).equals(post.author as Types.ObjectId)) {
-    await notify(req, { recipient: parent.author as Types.ObjectId, sender: userId, type: 'reply', post: post._id, comment: comment._id });
+  await notify(req, { recipient: post.authorId, sender: me, type: 'comment', post: post.id, comment: created.id });
+  if (parent && parent.authorId !== post.authorId) {
+    await notify(req, { recipient: parent.authorId, sender: me, type: 'reply', post: post.id, comment: created.id });
   }
 
-  res.status(201).json({
-    success: true,
-    data: { comment: { ...withLikeStatus(comment.toObject(), userId.toString()), replyCount: 0 } },
-  });
+  res.status(201).json({ success: true, data: { comment: { ...(await findComment(created.id, me)), replyCount: 0 } } });
 };
 
 export const updateComment = async (req: IAuthRequest, res: Response): Promise<void> => {
   const { content } = updateCommentSchema.parse(req.body);
 
-  const comment = await Comment.findOneAndUpdate(
-    { _id: req.params.commentId, post: req.params.id, author: req.user!._id },
-    { $set: { content, isEdited: true } },
-    { new: true }
-  )
-    .populate('author', AUTHOR_FIELDS)
-    .lean();
+  const [updated] = await db
+    .update(commentsTable)
+    .set({ content, isEdited: true, updatedAt: new Date() })
+    .where(
+      and(
+        eq(commentsTable.id, req.params.commentId),
+        eq(commentsTable.postId, req.params.id),
+        eq(commentsTable.authorId, req.user!.id)
+      )
+    )
+    .returning({ id: commentsTable.id });
 
-  if (!comment) {
+  if (!updated) {
     res.status(404).json({ success: false, error: 'Comment not found or unauthorized' });
     return;
   }
 
-  res.status(200).json({ success: true, data: { comment: withLikeStatus(comment, req.user!._id.toString()) } });
+  res.status(200).json({ success: true, data: { comment: await findComment(updated.id, req.user!.id) } });
 };
 
 export const deleteComment = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const comment = await Comment.findOneAndDelete({
-    _id: req.params.commentId,
-    post: req.params.id,
-    author: req.user!._id,
+  const { commentId, id: postId } = req.params;
+
+  // Replies and notifications about any removed comment go with it through ON DELETE CASCADE.
+  const removed = await db.transaction(async (tx) => {
+    const [own] = await tx
+      .select({ id: commentsTable.id })
+      .from(commentsTable)
+      .where(and(eq(commentsTable.id, commentId), eq(commentsTable.postId, postId), eq(commentsTable.authorId, req.user!.id)))
+      .for('update');
+    if (!own) return 0;
+    const gone = await tx
+      .delete(commentsTable)
+      .where(or(eq(commentsTable.id, own.id), eq(commentsTable.parentId, own.id)))
+      .returning({ id: commentsTable.id });
+    await tx
+      .update(postsTable)
+      .set({ commentsCount: sql`greatest(${postsTable.commentsCount} - ${gone.length}, 0)` })
+      .where(eq(postsTable.id, postId));
+    return gone.length;
   });
 
-  if (!comment) {
+  if (!removed) {
     res.status(404).json({ success: false, error: 'Comment not found or unauthorized' });
     return;
   }
-
-  const removed = [comment._id];
-  if (!comment.parentComment) {
-    const replies = await Comment.find({ parentComment: comment._id }).select('_id').lean();
-    removed.push(...replies.map((r) => r._id));
-    await Comment.deleteMany({ parentComment: comment._id });
-  }
-
-  await Promise.all([
-    Post.updateOne({ _id: comment.post }, { $inc: { commentsCount: -removed.length } }),
-    Notification.deleteMany({ comment: { $in: removed } }),
-  ]);
-
-  res.status(200).json({ success: true, data: { removed: removed.length } });
+  res.status(200).json({ success: true, data: { removed } });
 };
 
-export const likeComment = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const comment = await Comment.findOneAndUpdate(
-    { _id: req.params.commentId, post: req.params.id },
-    { $addToSet: { likes: req.user!._id } },
-    { new: true }
-  );
-  if (!comment) {
-    res.status(404).json({ success: false, error: 'Comment not found' });
-    return;
-  }
-  res.status(200).json({ success: true, data: { likeCount: comment.likes.length, isLiked: true } });
-};
+const toggleCommentLike = (liked: boolean) =>
+  async (req: IAuthRequest, res: Response): Promise<void> => {
+    const { commentId, id: postId } = req.params;
+    const me = req.user!.id;
+    const [comment] = await db
+      .select({ id: commentsTable.id })
+      .from(commentsTable)
+      .where(and(eq(commentsTable.id, commentId), eq(commentsTable.postId, postId)))
+      .limit(1);
+    if (!comment) {
+      res.status(404).json({ success: false, error: 'Comment not found' });
+      return;
+    }
 
-export const unlikeComment = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const comment = await Comment.findOneAndUpdate(
-    { _id: req.params.commentId, post: req.params.id },
-    { $pull: { likes: req.user!._id } },
-    { new: true }
-  );
-  if (!comment) {
-    res.status(404).json({ success: false, error: 'Comment not found' });
-    return;
-  }
-  res.status(200).json({ success: true, data: { likeCount: comment.likes.length, isLiked: false } });
-};
+    const mine = and(eq(commentLikesTable.commentId, comment.id), eq(commentLikesTable.userId, me));
+    if (liked) await db.insert(commentLikesTable).values({ commentId: comment.id, userId: me }).onConflictDoNothing();
+    else await db.delete(commentLikesTable).where(mine);
+
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(commentLikesTable)
+      .where(eq(commentLikesTable.commentId, comment.id));
+    res.status(200).json({ success: true, data: { likeCount: total, isLiked: liked } });
+  };
+
+export const likeComment = toggleCommentLike(true);
+export const unlikeComment = toggleCommentLike(false);

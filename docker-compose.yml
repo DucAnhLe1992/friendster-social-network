@@ -2,16 +2,19 @@
 # To run published images instead of building: set IMAGE_PREFIX=<dockerhub user> and IMAGE_TAG=<commit sha>,
 # then `docker compose pull && docker compose up -d --no-build`.
 # For local development (database only) use: docker compose -f docker-compose.dev.yml up -d
+# Set DATABASE_URL in .env to your Neon connection string; without it the bundled postgres service is used.
 services:
-  mongodb:
-    image: mongo:7-jammy
+  postgres:
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      MONGO_INITDB_DATABASE: friendster
+      POSTGRES_USER: friendster
+      POSTGRES_PASSWORD: friendster
+      POSTGRES_DB: friendster
     volumes:
-      - mongodb_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test: ["CMD", "pg_isready", "-U", "friendster", "-d", "friendster"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -27,7 +30,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 5000
-      MONGODB_URI: mongodb://mongodb:27017/friendster
+      DATABASE_URL: ${DATABASE_URL:-postgresql://friendster:friendster@postgres:5432/friendster}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
@@ -36,7 +39,7 @@ services:
     volumes:
       - api_uploads:/app/apps/api/uploads
     depends_on:
-      mongodb:
+      postgres:
         condition: service_healthy
     networks:
       - backend
@@ -57,7 +60,7 @@ services:
       - frontend
 
 volumes:
-  mongodb_data:
+  postgres_data:
   api_uploads:
 
 networks:

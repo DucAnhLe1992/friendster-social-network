@@ -1,83 +1,78 @@
-import { Types } from 'mongoose';
+import { sql, SQL } from 'drizzle-orm';
+import {
+  commentLikesTable,
+  commentsTable,
+  followsTable,
+  postLikesTable,
+  postsTable,
+  usersTable,
+} from '../database/schema';
 
-interface UserLike {
-  _id: Types.ObjectId;
-  email?: string;
-  handle: string;
-  displayName: string;
-  bio?: string;
-  avatar?: string;
-  coverImage?: string;
-  location?: string;
-  website?: string;
-  isVerified?: boolean;
-  followers?: Types.ObjectId[];
-  following?: Types.ObjectId[];
-  createdAt?: Date;
-}
+type Users = typeof usersTable;
 
-export const AUTHOR_FIELDS = 'handle displayName avatar isVerified';
+const viewerFlag = (viewerId: string | undefined, check: (viewer: string) => SQL): SQL<boolean> =>
+  viewerId ? sql<boolean>`exists(${check(viewerId)})` : sql<boolean>`false`;
 
-export const publicUser = (user: UserLike, viewerId?: string) => ({
-  _id: user._id.toString(),
-  handle: user.handle,
-  displayName: user.displayName,
-  bio: user.bio ?? '',
-  avatar: user.avatar ?? '',
-  coverImage: user.coverImage ?? '',
-  location: user.location ?? '',
-  website: user.website ?? '',
-  isVerified: user.isVerified ?? false,
-  followerCount: user.followers?.length ?? 0,
-  followingCount: user.following?.length ?? 0,
-  isFollowing: viewerId ? (user.followers ?? []).some((id) => id.toString() === viewerId) : false,
-  createdAt: user.createdAt,
+/** Columns for a post or comment author; pass an alias when users is joined more than once. */
+export const authorColumns = (u: Users = usersTable) => ({
+  _id: u.id,
+  handle: u.handle,
+  displayName: u.displayName,
+  avatar: u.avatar,
+  isVerified: u.isVerified,
 });
 
-export const selfUser = (user: UserLike) => ({
-  ...publicUser(user),
-  email: user.email ?? '',
+/** The public profile shape, computed in SQL so counts and follow state are always current. */
+export const publicUserColumns = (viewerId?: string, u: Users = usersTable) => ({
+  ...authorColumns(u),
+  bio: u.bio,
+  coverImage: u.coverImage,
+  location: u.location,
+  website: u.website,
+  followerCount: sql<number>`(select count(*)::int from ${followsTable} where ${followsTable.followingId} = ${u.id})`,
+  followingCount: sql<number>`(select count(*)::int from ${followsTable} where ${followsTable.followerId} = ${u.id})`,
+  isFollowing: viewerFlag(
+    viewerId,
+    (viewer) => sql`select 1 from ${followsTable} where ${followsTable.followerId} = ${viewer} and ${followsTable.followingId} = ${u.id}`
+  ),
+  createdAt: u.createdAt,
 });
 
-interface PostLike {
-  _id: Types.ObjectId;
-  author: unknown;
-  content: string;
-  images: string[];
-  likes: Types.ObjectId[];
-  commentsCount: number;
-  sharesCount: number;
-  isEdited: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}
+export const selfUserColumns = (u: Users = usersTable) => ({ ...publicUserColumns(undefined, u), email: u.email });
 
-const publicAuthor = (author: unknown) => {
-  if (!author || typeof author !== 'object' || !('handle' in author)) return author;
-  const a = author as UserLike;
-  return { _id: a._id, handle: a.handle, displayName: a.displayName, avatar: a.avatar ?? '', isVerified: a.isVerified ?? false };
-};
-
-/** The only shape a post leaves the API in; internal fields such as publication status never reach clients. */
-export const publicPost = (post: PostLike, viewerId?: string) => ({
-  _id: post._id,
-  author: publicAuthor(post.author),
-  content: post.content,
-  images: post.images,
-  likeCount: post.likes.length,
-  isLiked: viewerId ? post.likes.some((id) => id.toString() === viewerId) : false,
-  commentsCount: post.commentsCount,
-  sharesCount: post.sharesCount,
-  isEdited: post.isEdited,
-  createdAt: post.createdAt,
-  updatedAt: post.updatedAt,
+/** The only shape a post leaves the API in; select from posts joined to its author. */
+export const publicPostColumns = (viewerId?: string) => ({
+  _id: postsTable.id,
+  author: authorColumns(),
+  content: postsTable.content,
+  images: postsTable.images,
+  likeCount: sql<number>`(select count(*)::int from ${postLikesTable} where ${postLikesTable.postId} = ${postsTable.id})`,
+  isLiked: viewerFlag(
+    viewerId,
+    (viewer) => sql`select 1 from ${postLikesTable} where ${postLikesTable.postId} = ${postsTable.id} and ${postLikesTable.userId} = ${viewer}`
+  ),
+  commentsCount: postsTable.commentsCount,
+  sharesCount: postsTable.sharesCount,
+  isEdited: postsTable.isEdited,
+  createdAt: postsTable.createdAt,
+  updatedAt: postsTable.updatedAt,
 });
 
-export const withLikeStatus = <T extends { likes: Types.ObjectId[] }>(item: T, viewerId?: string) => {
-  const { likes, ...rest } = item;
-  return {
-    ...rest,
-    likeCount: likes.length,
-    isLiked: viewerId ? likes.some((id) => id.toString() === viewerId) : false,
-  };
-};
+/** Comments joined to their author. */
+export const publicCommentColumns = (viewerId?: string) => ({
+  _id: commentsTable.id,
+  post: commentsTable.postId,
+  author: authorColumns(),
+  content: commentsTable.content,
+  parentComment: commentsTable.parentId,
+  likeCount: sql<number>`(select count(*)::int from ${commentLikesTable} where ${commentLikesTable.commentId} = ${commentsTable.id})`,
+  isLiked: viewerFlag(
+    viewerId,
+    (viewer) =>
+      sql`select 1 from ${commentLikesTable} where ${commentLikesTable.commentId} = ${commentsTable.id} and ${commentLikesTable.userId} = ${viewer}`
+  ),
+  replyCount: sql<number>`(select count(*)::int from ${commentsTable} as replies where replies.parent_id = ${commentsTable.id})`,
+  isEdited: commentsTable.isEdited,
+  createdAt: commentsTable.createdAt,
+  updatedAt: commentsTable.updatedAt,
+});

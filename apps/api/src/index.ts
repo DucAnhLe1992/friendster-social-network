@@ -1,13 +1,12 @@
-import mongoose from 'mongoose';
 import { env } from './config/env';
-import connectDB from './config/database';
+import { pool, runMigrations } from './database/db';
 import { createApp } from './app';
 import { sweepAbandonedUploads } from './services/media';
 
 const ABANDONED_UPLOAD_AGE_MS = 24 * 60 * 60 * 1000;
 
 const start = async () => {
-  await connectDB(env.MONGODB_URI);
+  await runMigrations();
 
   const { httpServer, io } = createApp();
   httpServer.listen(env.PORT, () => {
@@ -29,7 +28,7 @@ const start = async () => {
     force.unref();
     io.close();
     httpServer.close(async () => {
-      await mongoose.connection.close();
+      await pool.end();
       process.exit(0);
     });
   };

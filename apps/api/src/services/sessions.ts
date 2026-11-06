@@ -1,20 +1,31 @@
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import crypto from 'crypto';
-import { RefreshSession, User } from '../models';
+import { db } from '../database/db';
+import { refreshSessionsTable, usersTable } from '../database/schema';
 import { generateTokens, tokenExpiry, verifyRefreshToken } from '../utils/jwt';
-import { IUser, ITokens } from '../types';
+import { AuthUser, ITokens } from '../types';
 
 // Concurrent refreshes from several tabs may legitimately present the same token for a moment.
 const REUSE_GRACE_MS = 30 * 1000;
 
-const issue = async (user: IUser, family: string) => {
+type SessionUser = Pick<AuthUser, 'id' | 'handle' | 'role'>;
+type Session = typeof refreshSessionsTable.$inferSelect;
+
+const tokensFor = (user: SessionUser, jti: string, issuedAt: number) =>
+  generateTokens({ userId: user.id, handle: user.handle, role: user.role }, jti, issuedAt);
+
+const issue = async (user: SessionUser, family: string) => {
   const jti = crypto.randomUUID();
   const issuedAt = Math.floor(Date.now() / 1000);
-  const tokens = generateTokens({ userId: user._id.toString(), handle: user.handle, role: user.role }, jti, issuedAt);
-  await RefreshSession.create({ user: user._id, jti, family, issuedAt, expiresAt: tokenExpiry(tokens.refreshToken) });
+  const tokens = tokensFor(user, jti, issuedAt);
+  await db
+    .insert(refreshSessionsTable)
+    .values({ userId: user.id, jti, family, issuedAt, expiresAt: tokenExpiry(tokens.refreshToken) });
   return { jti, tokens };
 };
 
-export const startSession = async (user: IUser): Promise<ITokens> => (await issue(user, crypto.randomUUID())).tokens;
+export const startSession = async (user: SessionUser): Promise<ITokens> =>
+  (await issue(user, crypto.randomUUID())).tokens;
 
 const decode = (refreshToken: string) => {
   try {
@@ -25,88 +36,118 @@ const decode = (refreshToken: string) => {
   }
 };
 
-export const rotateSession = async (refreshToken: string): Promise<{ user: IUser; tokens: ITokens } | null> => {
+const findSession = async (jti: string, userId: string): Promise<Session | null> => {
+  const [row] = await db
+    .select()
+    .from(refreshSessionsTable)
+    .where(and(eq(refreshSessionsTable.jti, jti), eq(refreshSessionsTable.userId, userId)))
+    .limit(1);
+  return row ?? null;
+};
+
+const findUser = async (id: string): Promise<SessionUser | null> => {
+  const [row] = await db
+    .select({ id: usersTable.id, handle: usersTable.handle, role: usersTable.role })
+    .from(usersTable)
+    .where(eq(usersTable.id, id))
+    .limit(1);
+  return row ?? null;
+};
+
+const revokeAll = (userId: string) => db.delete(refreshSessionsTable).where(eq(refreshSessionsTable.userId, userId));
+
+const withinGrace = (session: Session, now: Date) =>
+  Boolean(session.rotatedAt && now.getTime() - session.rotatedAt.getTime() < REUSE_GRACE_MS);
+
+// A tab that lost the rotation race within the grace window receives the winner's tokens instead of being signed out.
+const recoverConcurrentRotation = async (session: Session, now: Date) => {
+  if (!withinGrace(session, now) || !session.successorJti) return null;
+  const [successor] = await db
+    .select()
+    .from(refreshSessionsTable)
+    .where(
+      and(
+        eq(refreshSessionsTable.jti, session.successorJti),
+        eq(refreshSessionsTable.userId, session.userId),
+        eq(refreshSessionsTable.family, session.family),
+        isNull(refreshSessionsTable.rotatedAt),
+        gt(refreshSessionsTable.expiresAt, now)
+      )
+    )
+    .limit(1);
+  if (!successor) return null;
+  const user = await findUser(session.userId);
+  return user ? { user, tokens: tokensFor(user, successor.jti, successor.issuedAt) } : null;
+};
+
+const settleRotated = async (session: Session, now: Date) => {
+  const recovered = await recoverConcurrentRotation(session, now);
+  if (recovered) return recovered;
+  // Replay of a token that was already rotated: treat the whole account's sessions as compromised.
+  if (!withinGrace(session, now)) await revokeAll(session.userId);
+  return null;
+};
+
+export const rotateSession = async (refreshToken: string): Promise<{ user: SessionUser; tokens: ITokens } | null> => {
   const claims = decode(refreshToken);
   if (!claims) return null;
 
   const now = new Date();
-  const known = await RefreshSession.findOne({ jti: claims.jti, user: claims.userId }).lean();
+  const known = await findSession(claims.jti, claims.userId);
   if (!known) {
-    await RefreshSession.deleteMany({ user: claims.userId });
+    await revokeAll(claims.userId);
     return null;
   }
+  if (known.rotatedAt) return settleRotated(known, now);
 
-  const recoverConcurrentRotation = async (session: typeof known) => {
-    const withinGrace = session.rotatedAt && now.getTime() - session.rotatedAt.getTime() < REUSE_GRACE_MS;
-    if (!withinGrace || !session.successorJti) return null;
+  const user = await findUser(claims.userId);
+  if (!user) return null;
 
-    const successor = await RefreshSession.findOne({
-      jti: session.successorJti,
-      user: claims.userId,
-      family: session.family,
-      rotatedAt: null,
-      expiresAt: { $gt: now },
-    }).lean();
-    if (!successor?.issuedAt) return null;
+  // Claiming the old token and creating its successor commit together, so a racing logout or rotation sees either
+  // both or neither.
+  const jti = crypto.randomUUID();
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const tokens = tokensFor(user, jti, issuedAt);
+  const claimed = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(refreshSessionsTable)
+      .set({ rotatedAt: now, successorJti: jti })
+      .where(
+        and(
+          eq(refreshSessionsTable.id, known.id),
+          isNull(refreshSessionsTable.rotatedAt),
+          gt(refreshSessionsTable.expiresAt, now)
+        )
+      )
+      .returning({ id: refreshSessionsTable.id });
+    if (!row) return false;
+    await tx.insert(refreshSessionsTable).values({
+      userId: user.id,
+      jti,
+      family: known.family,
+      issuedAt,
+      expiresAt: tokenExpiry(tokens.refreshToken),
+    });
+    return true;
+  });
 
-    const user = await User.findById(claims.userId);
-    if (!user) return null;
-    const tokens = generateTokens(
-      { userId: user._id.toString(), handle: user.handle, role: user.role },
-      successor.jti,
-      successor.issuedAt
-    );
-    return { user, tokens };
-  };
-
-  if (known.rotatedAt) {
-    const recovered = await recoverConcurrentRotation(known);
-    if (recovered) return recovered;
-    const withinGrace = now.getTime() - known.rotatedAt.getTime() < REUSE_GRACE_MS;
-    if (!withinGrace) {
-      // Replay of a token that was already rotated: treat the whole account's sessions as compromised.
-      await RefreshSession.deleteMany({ user: claims.userId });
-    }
-    return null;
-  }
-
-  const user = await User.findById(claims.userId);
-  if (!user) {
-    await RefreshSession.deleteMany({ user: claims.userId });
-    return null;
-  }
-
-  const family = known.family ?? known.jti;
-  const successor = await issue(user, family);
-  const claimed = await RefreshSession.findOneAndUpdate(
-    { jti: claims.jti, user: claims.userId, rotatedAt: null, expiresAt: { $gt: now } },
-    { $set: { rotatedAt: now, successorJti: successor.jti } }
-  );
-
-  if (!claimed) {
-    await RefreshSession.deleteOne({ jti: successor.jti, user: claims.userId });
-    const current = await RefreshSession.findOne({ jti: claims.jti, user: claims.userId }).lean();
-    if (!current) return null;
-    const recovered = await recoverConcurrentRotation(current);
-    if (recovered) return recovered;
-    const withinGrace = current.rotatedAt && now.getTime() - current.rotatedAt.getTime() < REUSE_GRACE_MS;
-    if (!withinGrace) await RefreshSession.deleteMany({ user: claims.userId });
-    return null;
-  }
-
-  // A logout that raced this rotation deleted the family before our successor existed; honour it.
-  if (!(await RefreshSession.exists({ _id: claimed._id }))) {
-    await RefreshSession.deleteMany({ family });
-    return null;
-  }
-
-  return { user, tokens: successor.tokens };
+  if (claimed) return { user, tokens };
+  const current = await findSession(claims.jti, claims.userId);
+  return current ? settleRotated(current, now) : null;
 };
 
 export const endSession = async (refreshToken: string): Promise<void> => {
   const claims = decode(refreshToken);
   if (!claims) return;
-  const session = await RefreshSession.findOne({ jti: claims.jti, user: claims.userId }).lean();
-  if (!session) return;
-  await RefreshSession.deleteMany({ user: claims.userId, family: session.family ?? session.jti });
+  await db
+    .delete(refreshSessionsTable)
+    .where(
+      and(
+        eq(refreshSessionsTable.userId, claims.userId),
+        eq(
+          refreshSessionsTable.family,
+          sql`(select ${refreshSessionsTable.family} from ${refreshSessionsTable} where ${refreshSessionsTable.jti} = ${claims.jti})`
+        )
+      )
+    );
 };

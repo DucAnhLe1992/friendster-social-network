@@ -1,29 +1,46 @@
-import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
-import { afterAll, beforeAll, beforeEach } from 'vitest';
+import path from 'path';
+import { getTableName, is, sql } from 'drizzle-orm';
+import { PgTable } from 'drizzle-orm/pg-core';
+import { afterAll, beforeAll, beforeEach, vi } from 'vitest';
+import * as schema from '../src/database/schema';
 
 process.env.NODE_ENV = 'test';
+if (process.env.DATABASE_URL_TEST) process.env.DATABASE_URL = process.env.DATABASE_URL_TEST;
 
-let memoryServer: MongoMemoryServer | null = null;
+// CI provides a real Postgres through DATABASE_URL_TEST; locally each test file gets its own in-memory Postgres.
+vi.mock('../src/database/db', async (importOriginal) => {
+  if (process.env.DATABASE_URL_TEST) return importOriginal();
+
+  const { PGlite } = await import('@electric-sql/pglite');
+  const { drizzle } = await import('drizzle-orm/pglite');
+  const { migrate } = await import('drizzle-orm/pglite/migrator');
+  const client = new PGlite();
+  const db = drizzle({ client, schema });
+  const MIGRATIONS_FOLDER = path.resolve(__dirname, '../migrations');
+  return {
+    db,
+    MIGRATIONS_FOLDER,
+    pool: { query: (text: string) => client.query(text), end: () => client.close() },
+    runMigrations: () => migrate(db, { migrationsFolder: MIGRATIONS_FOLDER }),
+  };
+});
+
+const tableNames = Object.values(schema)
+  .filter((value): value is PgTable => is(value, PgTable))
+  .map((table) => `"${getTableName(table)}"`)
+  .join(', ');
 
 beforeAll(async () => {
-  // CI provides a real MongoDB service; locally an in-memory server is started instead.
-  let uri = process.env.MONGODB_URI_TEST;
-  if (!uri) {
-    memoryServer = await MongoMemoryServer.create();
-    uri = memoryServer.getUri();
-  }
-  await mongoose.connect(uri, { dbName: `friendster_test_${process.pid}_${Date.now()}` });
-  await Promise.all(Object.values(mongoose.models).map((model) => model.init()));
+  const { runMigrations } = await import('../src/database/db');
+  await runMigrations();
 });
 
 beforeEach(async () => {
-  const collections = await mongoose.connection.db!.collections();
-  await Promise.all(collections.map((c) => c.deleteMany({})));
+  const { db } = await import('../src/database/db');
+  await db.execute(sql.raw(`TRUNCATE TABLE ${tableNames} CASCADE`));
 });
 
 afterAll(async () => {
-  await mongoose.connection.dropDatabase();
-  await mongoose.disconnect();
-  await memoryServer?.stop();
+  const { pool } = await import('../src/database/db');
+  await pool.end();
 });

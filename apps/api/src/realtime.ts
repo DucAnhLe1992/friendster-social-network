@@ -2,7 +2,9 @@ import { Server as HttpServer } from 'http';
 import { Server } from 'socket.io';
 import { env } from './config/env';
 import { verifyAccessToken } from './utils/jwt';
-import { Conversation } from './models';
+import { eq } from 'drizzle-orm';
+import { db } from './database/db';
+import { conversationParticipantsTable as participants } from './database/schema';
 import { ServerToClientEvents, ClientToServerEvents, InterServerEvents, SocketData } from './types';
 
 export type RealtimeServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
@@ -13,12 +15,13 @@ const TYPING_EVENTS_PER_WINDOW = 10;
 export const userRoom = (userId: string): string => `user:${userId}`;
 
 const otherParticipants = async (conversationId: string, userId: string): Promise<string[] | null> => {
-  if (!/^[0-9a-fA-F]{24}$/.test(conversationId)) return null;
-  const conversation = await Conversation.findOne({ _id: conversationId, participants: userId })
-    .select('participants')
-    .lean();
-  if (!conversation) return null;
-  return conversation.participants.map((id) => id.toString()).filter((id) => id !== userId);
+  if (!/^[0-9a-f]{24}$/.test(conversationId)) return null;
+  const rows = await db
+    .select({ userId: participants.userId })
+    .from(participants)
+    .where(eq(participants.conversationId, conversationId));
+  if (!rows.some((row) => row.userId === userId)) return null;
+  return rows.map((row) => row.userId).filter((id) => id !== userId);
 };
 
 export const setupRealtime = (httpServer: HttpServer): RealtimeServer => {

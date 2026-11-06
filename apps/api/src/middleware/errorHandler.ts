@@ -6,9 +6,7 @@ import { IApiResponse } from '../types';
 
 export interface CustomError extends Error {
   statusCode?: number;
-  code?: number | string;
-  keyValue?: Record<string, string>;
-  errors?: Record<string, { message: string }>;
+  code?: string;
 }
 
 export const errorHandler = (
@@ -26,15 +24,9 @@ export const errorHandler = (
   } else if (err instanceof MulterError) {
     statusCode = 400;
     message = err.code === 'LIMIT_FILE_SIZE' ? 'Images must be 5MB or smaller' : 'Upload failed';
-  } else if (err.name === 'ValidationError' && err.errors) {
-    statusCode = 400;
-    message = Object.values(err.errors).map((val) => val.message).join(', ');
-  } else if (err.code === 11000 && err.keyValue) {
+  } else if (isDuplicateKey(err)) {
     statusCode = 409;
-    message = `${Object.keys(err.keyValue)[0]} already exists`;
-  } else if (err.name === 'CastError') {
-    statusCode = 400;
-    message = 'Invalid ID format';
+    message = 'That already exists';
   } else if (statusCode < 500) {
     message = err.message;
   }
@@ -62,4 +54,8 @@ export class HttpError extends Error {
   }
 }
 
-export const isDuplicateKey = (error: unknown) => (error as { code?: number })?.code === 11000;
+// PostgreSQL unique_violation; drizzle wraps driver errors, so the code may sit on `cause`.
+export const isDuplicateKey = (error: unknown): boolean => {
+  const e = error as { code?: string; cause?: unknown } | null;
+  return e?.code === '23505' || (e?.cause !== undefined && isDuplicateKey(e.cause));
+};

@@ -19,7 +19,7 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 ### Backend
 - **Runtime**: Node.js 22.12+
 - **Framework**: Express.js with TypeScript
-- **Database**: MongoDB with Mongoose ODM
+- **Database**: PostgreSQL on Neon, with Drizzle ORM and drizzle-kit migrations
 - **Authentication**: JWT (access + refresh tokens)
 - **Real-time**: Socket.io
 - **File Upload**: Multer to local disk; every image is decoded and re-encoded with sharp (unused decoders blocked)
@@ -99,126 +99,48 @@ friendster-modern/
 
 ## Planned (not implemented)
 
-- Stories (a data model exists, but there are no routes or UI)
+- Stories
 - Engagement-based feed ranking
 - Admin dashboard and content moderation
 - Frontend and browser end-to-end tests
 
 ## Database Schema
 
-### Users
-```typescript
-{
-  _id: ObjectId
-  email: string (unique)
-  password: string (hashed)
-  handle: string (unique)
-  displayName: string
-  bio: string
-  avatar: string (URL)
-  coverImage: string (URL)
-  location: string
-  website: string
-  followers: ObjectId[]
-  following: ObjectId[]
-  isVerified: boolean
-  role: 'user' | 'admin'
-  createdAt: Date
-  updatedAt: Date
-}
-```
+PostgreSQL hosted on [Neon](https://neon.tech), accessed through Drizzle ORM over `pg`. The schema lives in
+`apps/api/src/database/schema.ts`; SQL migrations are generated into `apps/api/migrations` with
+`npm run db:generate -w @friendster/api` and applied automatically when the API starts.
 
-### Posts
-```typescript
-{
-  _id: ObjectId
-  author: ObjectId (ref: User)
-  content: string
-  images: string[]
-  likes: ObjectId[] (ref: User)
-  commentsCount: number
-  sharesCount: number
-  isEdited: boolean
-  status: 'pending' | 'published'   // pending posts are hidden from every query
-  clientId?: string                  // unique per author; makes retried publishes idempotent
-  createdAt: Date
-  updatedAt: Date
-}
-```
+IDs are 24-character, time-ordered hex strings, so they sort by creation time and keep the format the web app
+already uses. Every relationship is a foreign key with `ON DELETE CASCADE`, so deleting a post removes its likes,
+comments, notifications and image records in the same statement.
 
-Publishing is a two-step commit: the post is saved as `pending`, its images are attached, and only then is it
-flipped to `published`. A retry carrying the same `clientId` returns the original post (409 if the content
-differs). The hourly sweep completes or removes `pending` posts older than the 15-minute claim lease, so an
-interrupted publish can never surface a post whose images were cleaned up.
+| Table | Purpose | Notable constraints |
+| --- | --- | --- |
+| `users` | Accounts and profiles | unique `email`, unique `handle`, `role` is `user` or `admin` |
+| `follows` | Who follows whom | primary key (`follower_id`, `following_id`) |
+| `posts` | Posts (up to 280 characters, up to 4 images) | unique (`author_id`, `client_id`) makes retried publishes idempotent; full-text index on `content` |
+| `post_likes` | Likes on posts | primary key (`post_id`, `user_id`) |
+| `comments` | Comments and one level of replies (`parent_id`) | replies are deleted with their parent |
+| `comment_likes` | Likes on comments | primary key (`comment_id`, `user_id`) |
+| `notifications` | like / comment / reply / follow / mention | optional `post_id`, `comment_id` |
+| `conversations` | Direct conversations | unique `pair_key` (sorted user IDs) gives one conversation per pair |
+| `conversation_participants` | Members of each conversation | primary key (`conversation_id`, `user_id`) |
+| `messages` | Direct messages | unique (`conversation_id`, `sender_id`, `client_id`) makes retried sends idempotent |
+| `refresh_sessions` | Refresh-token rotation | unique `jti`; tokens of one sign-in share a `family` |
+| `media` | Uploaded post images and their owner | unique `path`; `post_id` is set once an image is published |
 
-### Comments
-```typescript
-{
-  _id: ObjectId
-  post: ObjectId (ref: Post)
-  author: ObjectId (ref: User)
-  content: string
-  parentComment: ObjectId (ref: Comment, optional)
-  likes: ObjectId[] (ref: User)
-  createdAt: Date
-  updatedAt: Date
-}
-```
+Follower counts, like counts, reply counts and "is liked / is following" flags are computed in SQL on every read,
+so they can never drift from the underlying rows.
 
-### Notifications
-```typescript
-{
-  _id: ObjectId
-  recipient: ObjectId (ref: User)
-  sender: ObjectId (ref: User)
-  type: 'like' | 'comment' | 'follow' | 'mention'
-  post: ObjectId (ref: Post, optional)
-  comment: ObjectId (ref: Comment, optional)
-  isRead: boolean
-  createdAt: Date
-}
-```
-
-### Messages
-```typescript
-{
-  _id: ObjectId
-  conversation: ObjectId (ref: Conversation)
-  sender: ObjectId (ref: User)
-  content: string
-  isRead: boolean
-  clientId?: string   // unique per sender + conversation; makes retried sends idempotent
-  createdAt: Date
-}
-```
-
-### Conversations
-```typescript
-{
-  _id: ObjectId
-  participants: ObjectId[] (ref: User)
-  pairKey: string     // unique; one direct conversation per pair
-  createdAt: Date
-  updatedAt: Date
-}
-```
+Publishing a post is one transaction: the post row is inserted and its images are claimed (only the uploader's own,
+not-yet-used images qualify). If any image cannot be claimed the transaction rolls back and nothing is saved. The
+hourly sweep deletes uploads that no post claimed within a day; because both statements lock the same rows, an image
+is either published or swept, never both. A retry carrying the same `clientId` returns the original post (409 if the
+content differs).
 
 The last message and unread counts shown in the conversation list are always computed from the messages
 themselves, so they cannot drift or move backward. After a realtime reconnect the web app pages forward
 (`?after=<id>`) from the last message it had before the outage, and only marks messages read once that gap is filled.
-
-### Stories
-```typescript
-{
-  _id: ObjectId
-  author: ObjectId (ref: User)
-  mediaUrl: string
-  mediaType: 'image' | 'video'
-  views: ObjectId[] (ref: User)
-  expiresAt: Date
-  createdAt: Date
-}
-```
 
 ## API Endpoints
 
@@ -303,7 +225,7 @@ Messages are sent and marked read over HTTP; the socket carries live updates onl
 5. **Helmet**: Security headers
 6. **Input Validation**: Zod schemas for all inputs
 7. **File Upload**: Size and per-account rate limits, signature check, full decode and re-encode, pixel limits, bounded decode concurrency
-8. **MongoDB**: Parameterized queries via Mongoose (prevents injection)
+8. **Database**: Parameterized queries via Drizzle (prevents SQL injection); search input is escaped before `ILIKE`
 
 ## Performance Optimizations
 
@@ -322,7 +244,7 @@ docker-compose up
 ```
 
 ### Production
-`docker compose up -d` runs MongoDB (not exposed to the host), the API, and nginx serving the web app and
+`docker compose up -d` runs the API (connected to Neon through `DATABASE_URL`, or to a bundled Postgres container\nwhen it is not set), and nginx serving the web app and
 proxying `/api`, `/socket.io` and `/uploads`. Uploaded files live in a Docker volume.
 
 ## CI/CD Pipeline

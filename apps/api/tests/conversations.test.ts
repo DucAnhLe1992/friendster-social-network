@@ -1,8 +1,17 @@
 import request from 'supertest';
-import mongoose from 'mongoose';
+import { and, count, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { app, auth, registerUser } from './helpers';
-import { Message } from '../src/models';
+import { db } from '../src/database/db';
+import { messagesTable } from '../src/database/schema';
+
+const countMessages = async (conversationId: string, content?: string) => {
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(messagesTable)
+    .where(and(eq(messagesTable.conversationId, conversationId), content ? eq(messagesTable.content, content) : undefined));
+  return total;
+};
 
 describe('conversations', () => {
   it('resolves simultaneous starts from both participants to a single conversation', async () => {
@@ -26,10 +35,10 @@ describe('conversations', () => {
     const conversationId = start.body.data.conversation._id;
 
     const createdAt = new Date('2025-01-01T00:00:00Z');
-    await Message.insertMany(
+    await db.insert(messagesTable).values(
       Array.from({ length: 35 }, (_, i) => ({
-        conversation: new mongoose.Types.ObjectId(conversationId),
-        sender: new mongoose.Types.ObjectId(alice.id),
+        conversationId,
+        senderId: alice.id,
         content: `message ${i}`,
         createdAt,
         updatedAt: createdAt,
@@ -97,14 +106,14 @@ describe('conversations', () => {
     expect(results.filter((r) => r.status === 201)).toHaveLength(1);
     expect(results.every((r) => r.status === 201 || r.status === 200)).toBe(true);
     expect(new Set(results.map((r) => r.body.data.message._id)).size).toBe(1);
-    expect(await Message.countDocuments({ conversation: id, content: 'only once' })).toBe(1);
+    expect(await countMessages(id, 'only once')).toBe(1);
 
     const reused = await request(app)
       .post(`/api/conversations/${id}/messages`)
       .set(auth(alice))
       .send({ ...body, content: 'something else' });
     expect(reused.status).toBe(409);
-    expect(await Message.countDocuments({ conversation: id })).toBe(1);
+    expect(await countMessages(id)).toBe(1);
   });
 
   it('always shows the newest message in the list, whatever order writes finished in', async () => {
@@ -114,7 +123,9 @@ describe('conversations', () => {
     const id = start.body.data.conversation._id;
     await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'newer' }).expect(201);
     // An older message whose write lands last must not take over the summary.
-    await Message.create({ conversation: id, sender: alice.id, content: 'older', createdAt: new Date(Date.now() - 60_000) });
+    await db
+      .insert(messagesTable)
+      .values({ conversationId: id, senderId: alice.id, content: 'older', createdAt: new Date(Date.now() - 60_000) });
 
     const list = await request(app).get('/api/conversations').set(auth(alice));
     expect(list.body.data.conversations).toHaveLength(1);
@@ -129,9 +140,9 @@ describe('conversations', () => {
     const seen = await request(app).post(`/api/conversations/${id}/messages`).set(auth(alice)).send({ content: 'seen' });
 
     const createdAt = new Date(Date.now() + 1000);
-    await Message.insertMany(
-      Array.from({ length: 35 }, (_, i) => ({ conversation: id, sender: alice.id, content: `missed ${i}`, createdAt }))
-    );
+    await db
+      .insert(messagesTable)
+      .values(Array.from({ length: 35 }, (_, i) => ({ conversationId: id, senderId: alice.id, content: `missed ${i}`, createdAt })));
 
     const caught: string[] = [];
     let after = seen.body.data.message._id as string;

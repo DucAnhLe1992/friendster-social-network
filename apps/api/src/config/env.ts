@@ -23,11 +23,18 @@ const corsOrigins = (): string[] => {
     .filter(Boolean);
 };
 
+// Neon (or any PostgreSQL) connection string; locally falls back to the Postgres from docker-compose.dev.yml.
+const databaseUrl = (): string => {
+  const value = process.env.DATABASE_URL;
+  if (!value && isProduction) throw new Error('DATABASE_URL must be set in production');
+  return value || 'postgresql://friendster:friendster@localhost:5432/friendster';
+};
+
 export const env = {
   NODE_ENV,
   PORT: parseInt(process.env.PORT || '5000', 10),
 
-  MONGODB_URI: process.env.MONGODB_URI || 'mongodb://localhost:27017/friendster',
+  DATABASE_URL: databaseUrl(),
 
   JWT_ACCESS_SECRET: secret('JWT_ACCESS_SECRET', 'dev-access-secret-change-me'),
   JWT_REFRESH_SECRET: secret('JWT_REFRESH_SECRET', 'dev-refresh-secret-change-me'),

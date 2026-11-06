@@ -1,46 +1,57 @@
 import { Response } from 'express';
-import { Notification } from '../models';
+import { and, count, desc, eq } from 'drizzle-orm';
+import { db } from '../database/db';
+import { notificationsTable } from '../database/schema';
 import { paginationSchema } from '../utils/validation';
-import { AUTHOR_FIELDS } from '../utils/serializers';
+import { selectNotifications } from '../services/notifications';
 import { IApiResponse, IAuthRequest } from '../types';
+
+const unreadCountFor = async (recipient: string) => {
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(notificationsTable)
+    .where(and(eq(notificationsTable.recipientId, recipient), eq(notificationsTable.isRead, false)));
+  return total;
+};
+
+const own = (req: IAuthRequest) =>
+  and(eq(notificationsTable.id, req.params.id), eq(notificationsTable.recipientId, req.user!.id));
 
 export const getNotifications = async (req: IAuthRequest, res: Response): Promise<void> => {
   const { page, limit } = paginationSchema.parse(req.query);
-  const skip = (page - 1) * limit;
-  const recipient = req.user!._id;
+  const offset = (page - 1) * limit;
+  const recipient = req.user!.id;
+  const mine = eq(notificationsTable.recipientId, recipient);
 
-  const [notifications, total, unreadCount] = await Promise.all([
-    Notification.find({ recipient })
-      .sort({ createdAt: -1 })
-      .skip(skip)
+  const [notifications, [{ total }], unreadCount] = await Promise.all([
+    selectNotifications()
+      .where(mine)
+      .orderBy(desc(notificationsTable.createdAt), desc(notificationsTable.id))
       .limit(limit)
-      .populate('sender', AUTHOR_FIELDS)
-      .populate('post', 'content images')
-      .populate('comment', 'content')
-      .lean(),
-    Notification.countDocuments({ recipient }),
-    Notification.countDocuments({ recipient, isRead: false }),
+      .offset(offset),
+    db.select({ total: count() }).from(notificationsTable).where(mine),
+    unreadCountFor(recipient),
   ]);
 
   const response: IApiResponse = {
     success: true,
-    data: { notifications: notifications.filter((n) => n.sender) },
-    meta: { page, limit, total, hasMore: skip + notifications.length < total, unreadCount },
+    data: { notifications },
+    meta: { page, limit, total, hasMore: offset + notifications.length < total, unreadCount },
   };
   res.status(200).json(response);
 };
 
 export const getUnreadCount = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const unreadCount = await Notification.countDocuments({ recipient: req.user!._id, isRead: false });
-  res.status(200).json({ success: true, data: { unreadCount } });
+  res.status(200).json({ success: true, data: { unreadCount: await unreadCountFor(req.user!.id) } });
 };
 
 export const markAsRead = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const notification = await Notification.findOneAndUpdate(
-    { _id: req.params.id, recipient: req.user!._id },
-    { $set: { isRead: true } }
-  );
-  if (!notification) {
+  const updated = await db
+    .update(notificationsTable)
+    .set({ isRead: true })
+    .where(own(req))
+    .returning({ id: notificationsTable.id });
+  if (updated.length === 0) {
     res.status(404).json({ success: false, error: 'Notification not found' });
     return;
   }
@@ -48,13 +59,16 @@ export const markAsRead = async (req: IAuthRequest, res: Response): Promise<void
 };
 
 export const markAllAsRead = async (req: IAuthRequest, res: Response): Promise<void> => {
-  await Notification.updateMany({ recipient: req.user!._id, isRead: false }, { $set: { isRead: true } });
+  await db
+    .update(notificationsTable)
+    .set({ isRead: true })
+    .where(and(eq(notificationsTable.recipientId, req.user!.id), eq(notificationsTable.isRead, false)));
   res.status(200).json({ success: true });
 };
 
 export const deleteNotification = async (req: IAuthRequest, res: Response): Promise<void> => {
-  const notification = await Notification.findOneAndDelete({ _id: req.params.id, recipient: req.user!._id });
-  if (!notification) {
+  const removed = await db.delete(notificationsTable).where(own(req)).returning({ id: notificationsTable.id });
+  if (removed.length === 0) {
     res.status(404).json({ success: false, error: 'Notification not found' });
     return;
   }
