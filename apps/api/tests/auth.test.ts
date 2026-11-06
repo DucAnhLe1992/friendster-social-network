@@ -6,19 +6,32 @@ import { RefreshSession } from '../src/models';
 const refresh = (refreshToken: string) => request(app).post('/api/auth/refresh').send({ refreshToken });
 
 describe('sessions', () => {
-  it('rotates refresh tokens so each one works only once', async () => {
+  it('returns the same successor for a concurrent refresh retry', async () => {
     const alice = await registerUser('alice');
 
-    const first = await refresh(alice.refreshToken);
+    const [first, retry] = await Promise.all([refresh(alice.refreshToken), refresh(alice.refreshToken)]);
     expect(first.status).toBe(200);
-    const next = first.body.data.tokens.refreshToken as string;
-    expect(next).not.toBe(alice.refreshToken);
+    expect(retry.status).toBe(200);
+    expect(retry.body.data.tokens).toEqual(first.body.data.tokens);
+    expect(first.body.data.tokens.refreshToken).not.toBe(alice.refreshToken);
+    expect(await RefreshSession.countDocuments({ user: alice.id })).toBe(2);
 
-    const replay = await refresh(alice.refreshToken);
-    expect(replay.status).toBe(401);
-
-    const second = await refresh(next);
+    const second = await refresh(first.body.data.tokens.refreshToken as string);
     expect(second.status).toBe(200);
+  });
+
+  it('rejects a rotated refresh token replayed after its grace period', async () => {
+    const alice = await registerUser('alice');
+    await refresh(alice.refreshToken).expect(200);
+    await RefreshSession.updateOne({ rotatedAt: { $ne: null } }, { $set: { rotatedAt: new Date(Date.now() - 60_000) } });
+    expect((await refresh(alice.refreshToken)).status).toBe(401);
+  });
+
+  it('rejects registration passwords shorter than twelve characters', async () => {
+    const response = await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'short@example.com', password: 'Short123!', handle: 'shorty', displayName: 'Short' });
+    expect(response.status).toBe(400);
   });
 
   it('revokes every session when a rotated token is replayed later', async () => {

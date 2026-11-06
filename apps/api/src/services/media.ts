@@ -6,7 +6,13 @@ import { removeUpload } from '../middleware/upload';
 export const CLAIM_LEASE_MS = 15 * 60 * 1000;
 
 export const recordUploads = async (owner: Types.ObjectId, paths: string[]): Promise<void> => {
-  await Media.insertMany(paths.map((path) => ({ owner, path })));
+  try {
+    await Media.insertMany(paths.map((path) => ({ owner, path })));
+  } catch (error) {
+    await Media.deleteMany({ owner, path: { $in: paths } }).catch(() => undefined);
+    await Promise.all(paths.map(removeUpload));
+    throw error;
+  }
 };
 
 /** Atomically reserves each image for `postId`; all-or-nothing, and an image can belong to only one post. */

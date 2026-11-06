@@ -3,7 +3,7 @@ import { z } from 'zod';
 // Auth validations
 export const registerSchema = z.object({
   email: z.string().trim().toLowerCase().email('Invalid email address'),
-  password: z.string().min(6, 'Password must be at least 6 characters'),
+  password: z.string().min(12, 'Password must be at least 12 characters'),
   handle: z
     .string()
     .trim()
