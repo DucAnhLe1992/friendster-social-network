@@ -22,7 +22,7 @@ vi.mock('@/lib/api', () => ({
 }));
 
 const { LiveBuffer, applyLiveMessage } = await import('@/lib/messageSync');
-const liveBuffer = new LiveBuffer();
+let liveBuffer = new LiveBuffer();
 vi.mock('@/context/RealtimeContext', () => ({ useRealtime: () => ({ socket: null, synced: false, liveBuffer }) }));
 
 const { default: ChatThread } = await import('@/components/messages/ChatThread');
@@ -86,11 +86,13 @@ describe('ChatThread sending', () => {
     getMessages.mockReset();
     sendMessage.mockReset();
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    liveBuffer = new LiveBuffer();
     useAuthStore.setState({ user: { _id: 'u1' } as never });
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    qc.clear();
   });
 
   it('keeps a sent message when the first load finishes afterwards with an older, empty list', async () => {
@@ -126,6 +128,33 @@ describe('ChatThread sending', () => {
     });
 
     expect(ids()).toEqual(['A', 'B']);
+    expect(container.textContent).toContain('text-A');
+    expect(container.textContent).toContain('text-B');
+  });
+
+  it('cancels an abandoned load without showing an error or overwriting the next load', async () => {
+    let signal: AbortSignal | undefined;
+    getMessages.mockImplementationOnce(
+      (_id: string, _cursor: unknown, s: AbortSignal) =>
+        new Promise((_, reject) => {
+          signal = s;
+          s.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        })
+    );
+    await mount();
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal!.aborted).toBe(false);
+
+    await act(async () => root.unmount());
+    expect(signal!.aborted).toBe(true);
+
+    getMessages.mockResolvedValueOnce(page([msg('A', 1)]));
+    await mount();
+    await flush();
+
+    expect(ids()).toEqual(['A']);
+    expect(container.textContent).toContain('text-A');
+    expect(container.textContent).not.toContain("couldn't be loaded");
   });
 
   it('shows a message once when the live echo arrives before the send confirmation', async () => {
