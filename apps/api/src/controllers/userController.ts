@@ -6,6 +6,7 @@ import { commentLikesTable, commentsTable, followsTable, notificationsTable, pos
 import { updateProfileSchema, escapeLike } from '../utils/validation';
 import { authorColumns, publicUserColumns, selfUserColumns } from '../utils/serializers';
 import { removeUpload, uploadedPath } from '../middleware/upload';
+import { enqueueFileDeletions, processFileDeletionJobs } from '../services/media';
 import { notify } from '../services/notifications';
 import { IAuthRequest } from '../types';
 
@@ -67,6 +68,7 @@ const saveImage = (field: 'avatar' | 'coverImage', folder: 'avatars' | 'covers')
           .for('update');
         if (!row) return undefined;
         await tx.update(usersTable).set({ [field]: newPath, updatedAt: new Date() }).where(eq(usersTable.id, req.user!.id));
+        if (row.path) await enqueueFileDeletions(tx, [row.path]);
         return row.path;
       });
     } catch (error) {
@@ -78,7 +80,7 @@ const saveImage = (field: 'avatar' | 'coverImage', folder: 'avatars' | 'covers')
       res.status(404).json({ success: false, error: 'User not found' });
       return;
     }
-    await removeUpload(previous);
+    await processFileDeletionJobs();
     res.status(200).json({ success: true, data: { user: await loadSelf(req.user!.id) } });
   };
 

@@ -49,7 +49,9 @@ export const removeUpload = async (publicPath: string | undefined | null): Promi
   if (!publicPath?.startsWith('/uploads/')) return;
   const resolved = path.resolve(UPLOADS_ROOT, publicPath.slice('/uploads/'.length));
   if (!resolved.startsWith(UPLOADS_ROOT + path.sep)) return;
-  await fs.promises.unlink(resolved).catch(() => undefined);
+  await fs.promises.unlink(resolved).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
 };
 
 const collectFiles = (req: Request): Express.Multer.File[] => {

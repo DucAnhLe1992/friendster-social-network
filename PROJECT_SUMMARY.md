@@ -36,7 +36,7 @@ friendster-modern/
 - Create, read, update, delete posts
 - Image attachments support
 - Like/unlike functionality with real-time updates
-- Comment count tracking
+- Stored comment counts maintained transactionally by comment create/delete handlers
 - Edit tracking (isEdited flag)
 
 ### 3. Comments System
@@ -164,8 +164,8 @@ friendster-modern/
 
 ### Option 1: Docker (Easiest)
 ```bash
-cd /mnt/okcomputer/output/friendster-modern
-docker-compose up -d
+docker compose up -d --build                    # bundled Postgres
+docker compose -f docker-compose.neon.yml up -d --build  # Neon
 ```
 Access at: http://localhost
 

@@ -1,0 +1,60 @@
+# Production stack using Neon; no local Postgres container is started.
+services:
+  migrate:
+    image: ${IMAGE_PREFIX:-friendster}/friendster-api:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    restart: "no"
+    command: ["node", "dist/migrate.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL_DIRECT:?Set DATABASE_URL_DIRECT to your Neon direct connection string in .env}
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:?Set DATABASE_URL_DIRECT to your Neon direct connection string in .env}
+    networks:
+      - backend
+
+  api:
+    image: ${IMAGE_PREFIX:-friendster}/friendster-api:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to your Neon connection string in .env}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
+      JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
+      JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN to your public site origin in .env}
+    volumes:
+      - api_uploads:/app/apps/api/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - backend
+      - frontend
+
+  web:
+    image: ${IMAGE_PREFIX:-friendster}/friendster-web:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - frontend
+
+volumes:
+  api_uploads:
+
+networks:
+  backend:
+  frontend:

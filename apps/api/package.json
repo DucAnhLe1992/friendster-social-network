@@ -4,7 +4,7 @@
   "description": "Friendster Modern API - Express TypeScript Backend on Neon PostgreSQL",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "npm run db:migrate && tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src tests",

@@ -44,6 +44,7 @@ friendster-modern/
 │   ├── Dockerfile.api
 │   └── nginx.conf
 ├── docker-compose.yml
+├── docker-compose.neon.yml
 ├── docker-compose.dev.yml
 ├── .github/
 │   └── workflows/
@@ -108,11 +109,12 @@ friendster-modern/
 
 PostgreSQL hosted on [Neon](https://neon.tech), accessed through Drizzle ORM over `pg`. The schema lives in
 `apps/api/src/database/schema.ts`; SQL migrations are generated into `apps/api/migrations` with
-`npm run db:generate -w @friendster/api` and applied automatically when the API starts.
+`npm run db:generate -w @friendster/api`. Compose runs them once in a migration job before the API starts;
+local API development applies pending migrations before the watch process starts.
 
 IDs are 24-character, time-ordered hex strings, so they sort by creation time and keep the format the web app
-already uses. Every relationship is a foreign key with `ON DELETE CASCADE`, so deleting a post removes its likes,
-comments, notifications and image records in the same statement.
+already uses. Foreign keys cascade related database rows. Media-file deletion is queued in the same transaction
+as post/profile changes, then retried by a background worker; database cascades alone cannot clean local files.
 
 | Table | Purpose | Notable constraints |
 | --- | --- | --- |
@@ -126,17 +128,20 @@ comments, notifications and image records in the same statement.
 | `conversations` | Direct conversations | unique `pair_key` (sorted user IDs) gives one conversation per pair |
 | `conversation_participants` | Members of each conversation | primary key (`conversation_id`, `user_id`) |
 | `messages` | Direct messages | unique (`conversation_id`, `sender_id`, `client_id`) makes retried sends idempotent |
-| `refresh_sessions` | Refresh-token rotation | unique `jti`; tokens of one sign-in share a `family` |
+| `session_families` | Refresh-token revocation | one row per sign-in family; rotation and logout lock this row |
+| `refresh_sessions` | Refresh-token rotation | unique `jti`; rows reference a session family |
 | `media` | Uploaded post images and their owner | unique `path`; `post_id` is set once an image is published |
+| `file_deletions` | Durable file cleanup jobs | unique path; failed filesystem deletions are retried with backoff |
 
-Follower counts, like counts, reply counts and "is liked / is following" flags are computed in SQL on every read,
-so they can never drift from the underlying rows.
+Follower counts, post/comment like counts, reply counts and "is liked / is following" flags are computed in SQL on
+reads. `posts.comments_count` is different: it is stored and updated transactionally by comment create/delete
+handlers, so it is not recomputed on reads and can drift if comments are removed outside those paths.
 
 Publishing a post is one transaction: the post row is inserted and its images are claimed (only the uploader's own,
 not-yet-used images qualify). If any image cannot be claimed the transaction rolls back and nothing is saved. The
-hourly sweep deletes uploads that no post claimed within a day; because both statements lock the same rows, an image
-is either published or swept, never both. A retry carrying the same `clientId` returns the original post (409 if the
-content differs).
+hourly sweep deletes database records for uploads that no post claimed within a day and enqueues their file paths;
+because publication and sweeping contend on the same media rows, an image is either published or swept, never both.
+A retry carrying the same `clientId` returns the original post (409 if the content differs).
 
 The last message and unread counts shown in the conversation list are always computed from the messages
 themselves, so they cannot drift or move backward. After a realtime reconnect the web app pages forward
@@ -240,12 +245,15 @@ Possible future work: Redis caching, a CDN, and a Socket.io Redis adapter for ru
 
 ### Development
 ```bash
-docker-compose up
+docker compose up
 ```
 
 ### Production
-`docker compose up -d` runs the API (connected to Neon through `DATABASE_URL`, or to a bundled Postgres container\nwhen it is not set), and nginx serving the web app and
-proxying `/api`, `/socket.io` and `/uploads`. Uploaded files live in a Docker volume.
+`docker compose up -d` runs the API with bundled Postgres. For Neon, use
+`docker compose -f docker-compose.neon.yml up -d`; that stack contains no local
+database service. Both stacks run a one-shot migration container before the API,
+and nginx serves the web app and proxies `/api`, `/socket.io` and `/uploads`.
+Uploaded files live in a Docker volume.
 
 ## CI/CD Pipeline
 

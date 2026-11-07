@@ -4,8 +4,8 @@ import { db } from '../database/db';
 import { followsTable, notificationsTable, postLikesTable, postsTable, usersTable } from '../database/schema';
 import { createPostSchema, updatePostSchema, paginationSchema, profileTabSchema } from '../utils/validation';
 import { publicPostColumns } from '../utils/serializers';
-import { removeUpload, uploadedPath } from '../middleware/upload';
-import { claimForPost, recordUploads } from '../services/media';
+import { uploadedPath } from '../middleware/upload';
+import { claimForPost, enqueueFileDeletions, processFileDeletionJobs, recordUploads } from '../services/media';
 import { isDuplicateKey } from '../middleware/errorHandler';
 import { notify } from '../services/notifications';
 import { IApiResponse, IAuthRequest } from '../types';
@@ -169,16 +169,20 @@ export const updatePost = async (req: IAuthRequest, res: Response): Promise<void
 
 export const deletePost = async (req: IAuthRequest, res: Response): Promise<void> => {
   // Comments, likes, notifications and image records go with the post through ON DELETE CASCADE.
-  const [post] = await db
-    .delete(postsTable)
-    .where(and(eq(postsTable.id, req.params.id), eq(postsTable.authorId, req.user!.id)))
-    .returning({ images: postsTable.images });
+  const post = await db.transaction(async (tx) => {
+    const [deleted] = await tx
+      .delete(postsTable)
+      .where(and(eq(postsTable.id, req.params.id), eq(postsTable.authorId, req.user!.id)))
+      .returning({ images: postsTable.images });
+    if (deleted) await enqueueFileDeletions(tx, deleted.images);
+    return deleted;
+  });
   if (!post) {
     res.status(404).json({ success: false, error: 'Post not found or unauthorized' });
     return;
   }
 
-  await Promise.all(post.images.map(removeUpload));
+  await processFileDeletionJobs();
   res.status(200).json({ success: true, message: 'Post deleted successfully' });
 };
 
