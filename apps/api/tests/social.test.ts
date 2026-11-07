@@ -1,8 +1,30 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import { db } from '../src/database/db';
+import { commentsTable } from '../src/database/schema';
 import { app, auth, registerUser } from './helpers';
 
 describe('comments, follows and notifications', () => {
+  it('prevents a comment parent from belonging to a different post at the database layer', async () => {
+    const alice = await registerUser('alice');
+    const firstPost = await request(app).post('/api/posts').set(auth(alice)).send({ content: 'first post' }).expect(201);
+    const secondPost = await request(app).post('/api/posts').set(auth(alice)).send({ content: 'second post' }).expect(201);
+    const root = await request(app)
+      .post(`/api/posts/${firstPost.body.data.post._id}/comments`)
+      .set(auth(alice))
+      .send({ content: 'root' })
+      .expect(201);
+
+    await expect(
+      db.insert(commentsTable).values({
+        postId: secondPost.body.data.post._id,
+        authorId: alice.id,
+        content: 'cross-post reply',
+        parentId: root.body.data.comment._id,
+      })
+    ).rejects.toThrow();
+  });
+
   it('threads replies, counts them, and cleans up when a comment is deleted', async () => {
     const alice = await registerUser('alice');
     const bob = await registerUser('bob');

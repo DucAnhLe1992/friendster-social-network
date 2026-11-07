@@ -6,8 +6,8 @@ import { app, auth, PNG_BYTES, registerUser } from './helpers';
 import { removeUpload, UPLOADS_ROOT } from '../src/middleware/upload';
 import { count, eq } from 'drizzle-orm';
 import { db } from '../src/database/db';
-import { mediaTable, postsTable } from '../src/database/schema';
-import { sweepAbandonedUploads } from '../src/services/media';
+import { fileDeletionsTable, mediaTable, postsTable } from '../src/database/schema';
+import { processFileDeletionJobs, sweepAbandonedUploads } from '../src/services/media';
 
 const backdateUpload = (image: string) =>
   db.update(mediaTable).set({ createdAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(mediaTable.path, image));
@@ -126,6 +126,33 @@ describe('posts and uploads', () => {
     await request(app).get(image).expect(200);
     await request(app).delete(`/api/posts/${first.body.data.post._id}`).set(auth(alice)).expect(200);
     await request(app).get(image).expect(404);
+  });
+
+  it('retains failed file deletions and retries them', async () => {
+    const alice = await registerUser('alice');
+    const image = await uploadPixel(alice);
+    const created = await request(app).post('/api/posts').set(auth(alice)).send({ images: [image] }).expect(201);
+    const filePath = path.join(UPLOADS_ROOT, image.slice('/uploads/'.length));
+    await fs.unlink(filePath);
+    await fs.mkdir(filePath);
+
+    try {
+      await request(app).delete(`/api/posts/${created.body.data.post._id}`).set(auth(alice)).expect(200);
+      const [job] = await db.select().from(fileDeletionsTable).where(eq(fileDeletionsTable.path, image)).limit(1);
+      expect(job.attempts).toBe(1);
+      expect(job.lastError).toBeTruthy();
+
+      await fs.rm(filePath, { recursive: true, force: true });
+      await db
+        .update(fileDeletionsTable)
+        .set({ availableAt: new Date(Date.now() - 1000) })
+        .where(eq(fileDeletionsTable.id, job.id));
+      const retry = await processFileDeletionJobs();
+      expect(retry).toEqual({ completed: 1, failed: 0 });
+      expect(await db.select().from(fileDeletionsTable)).toHaveLength(0);
+    } finally {
+      await fs.rm(filePath, { recursive: true, force: true });
+    }
   });
 
   it('releases images when post creation is rejected and sweeps abandoned uploads', async () => {

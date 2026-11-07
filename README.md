@@ -69,6 +69,9 @@ docker compose up -d --build
 
 The site is served at http://localhost. nginx forwards `/api`, `/socket.io`
 and `/uploads` to the API container, so no other ports are exposed.
+This command uses the bundled Postgres container. For Neon, set `DATABASE_URL`
+to Neon’s pooled connection URL and `DATABASE_URL_DIRECT` to its direct URL in
+`.env`, then run `docker compose -f docker-compose.neon.yml up -d --build`.
 
 ### Option 2: Local development
 
@@ -88,8 +91,13 @@ The schema lives in `apps/api/src/database/schema.ts`. After changing it:
 
 ```bash
 npm run db:generate -w @friendster/api   # writes a new SQL file to apps/api/migrations
-npm run db:migrate -w @friendster/api    # applies it (the API also applies pending migrations on start)
+npm run db:migrate -w @friendster/api    # applies it to the configured database
 ```
+
+Compose runs the compiled migration job once before starting the API, using
+`DATABASE_URL_DIRECT`. The API uses `DATABASE_URL` with bounded pool and query
+timeouts. Local API development applies pending migrations before the watch
+process starts.
 
 ### Checks (the same ones CI runs)
 
@@ -206,7 +214,8 @@ friendster-modern/
 ## 🚀 Deployment
 
 ```bash
-docker compose up -d --build   # build and start
+docker compose up -d --build   # bundled Postgres
+docker compose -f docker-compose.neon.yml up -d --build  # Neon
 docker compose logs -f         # view logs
 docker compose down            # stop
 ```
@@ -218,7 +227,7 @@ secrets `DOCKER_USERNAME` / `DOCKER_PASSWORD` to enable it.
 ### Production Checklist
 
 - [ ] Change JWT secrets
-- [ ] Create a Neon project and set `DATABASE_URL` (migrations run automatically on API start)
+- [ ] Set Neon pooled `DATABASE_URL` and direct `DATABASE_URL_DIRECT` (Compose migrates before the API)
 - [ ] Back up the `api_uploads` volume (uploaded images live there)
 - [ ] Set up SSL certificates
 - [ ] Configure environment variables
@@ -230,7 +239,8 @@ secrets `DOCKER_USERNAME` / `DOCKER_PASSWORD` to enable it.
 ```env
 NODE_ENV=production
 PORT=5000
-DATABASE_URL=postgresql://user:password@ep-xxxx.region.aws.neon.tech/friendster?sslmode=require
+DATABASE_URL=postgresql://user:password@ep-xxxx-pooler.region.aws.neon.tech/friendster?sslmode=require
+DATABASE_URL_DIRECT=postgresql://user:password@ep-xxxx.region.aws.neon.tech/friendster?sslmode=require
 JWT_ACCESS_SECRET=<32+ random characters>
 JWT_REFRESH_SECRET=<32+ random characters, different>
 # Comma-separated list of allowed site addresses (required in production)

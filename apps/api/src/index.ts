@@ -1,23 +1,34 @@
-import { env } from './config/env';
-import { pool, runMigrations } from './database/db';
+import { assertProductionConfig, env } from './config/env';
+import { closePools } from './database/db';
 import { createApp } from './app';
-import { sweepAbandonedUploads } from './services/media';
+import { processFileDeletionJobs, sweepAbandonedUploads } from './services/media';
+import { deleteExpiredSessions } from './services/sessions';
 
 const ABANDONED_UPLOAD_AGE_MS = 24 * 60 * 60 * 1000;
+const MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 
 const start = async () => {
-  await runMigrations();
-
+  assertProductionConfig();
   const { httpServer, io } = createApp();
   httpServer.listen(env.PORT, () => {
     console.log(`Friendster API listening on port ${env.PORT} (${env.NODE_ENV})`);
   });
 
-  const sweep = () =>
-    sweepAbandonedUploads(ABANDONED_UPLOAD_AGE_MS)
+  const sweep = () => {
+    void sweepAbandonedUploads(ABANDONED_UPLOAD_AGE_MS)
       .then((count) => count && console.log(`Removed ${count} abandoned upload(s)`))
       .catch((error) => console.error('Upload sweep failed:', error));
-  const sweeper = setInterval(sweep, 60 * 60 * 1000);
+    void deleteExpiredSessions()
+      .then((count) => count && console.log(`Removed ${count} expired refresh session(s)`))
+      .catch((error) => console.error('Refresh-session cleanup failed:', error));
+    void processFileDeletionJobs()
+      .then(({ completed, failed }) => {
+        if (completed) console.log(`Removed ${completed} queued file(s)`);
+        if (failed) console.error(`${failed} queued file deletion(s) will be retried`);
+      })
+      .catch((error) => console.error('File-deletion worker failed:', error));
+  };
+  const sweeper = setInterval(sweep, MAINTENANCE_INTERVAL_MS);
   sweeper.unref();
   void sweep();
 
@@ -28,7 +39,7 @@ const start = async () => {
     force.unref();
     io.close();
     httpServer.close(async () => {
-      await pool.end();
+      await closePools();
       process.exit(0);
     });
   };

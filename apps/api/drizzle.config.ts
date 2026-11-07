@@ -6,6 +6,6 @@ export default defineConfig({
   out: './migrations',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgresql://friendster:friendster@localhost:5432/friendster',
+    url: process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL || 'postgresql://friendster:friendster@localhost:5432/friendster',
   },
 });

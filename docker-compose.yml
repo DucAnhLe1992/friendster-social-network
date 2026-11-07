@@ -39,11 +39,28 @@ services:
     volumes:
       - api_uploads:/app/apps/api/uploads
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - backend
+      - frontend
+
+  migrate:
+    image: ${IMAGE_PREFIX:-friendster}/friendster-api:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    restart: "no"
+    command: ["node", "dist/migrate.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-postgresql://friendster:friendster@postgres:5432/friendster}
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-${DATABASE_URL:-postgresql://friendster:friendster@postgres:5432/friendster}}
+    depends_on:
       postgres:
         condition: service_healthy
     networks:
       - backend
-      - frontend
 
   web:
     image: ${IMAGE_PREFIX:-friendster}/friendster-web:${IMAGE_TAG:-local}
