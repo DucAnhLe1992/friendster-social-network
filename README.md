@@ -1,10 +1,12 @@
 # Friendster Modern 🚀
 
-A modern, full-stack social media platform built with TypeScript, featuring real-time interactions, containerized deployment, and a sleek minimalist design.
+A modern, full-stack social media platform built with TypeScript, featuring real-time interactions, containerized deployment, and a sleek minimalist design. Visit it here [https://friendster-social.netlify.app](https://friendster-social.netlify.app).
 
 ![Tech Stack](https://img.shields.io/badge/Stack-TypeScript%20%7C%20React%20%7C%20Node.js%20%7C%20PostgreSQL-blue)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)
 ![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?logo=github-actions)
+
+> This project is a remake from one of my old projects I have done during my time I attended university, so it's pretty nostagic to me.
 
 ## ✨ Features
 
