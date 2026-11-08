@@ -150,6 +150,7 @@ describe('sessions', () => {
       const [rotationResponse, logoutResponse] = await Promise.all([rotation, logout]);
       expect(rotationResponse.status).toBe(200);
       expect(logoutResponse.status).toBe(200);
+      expect((await refresh(alice.refreshToken)).status).toBe(401);
       expect((await refresh(rotationResponse.body.data.tokens.refreshToken as string)).status).toBe(401);
     } finally {
       if (lockHeld) await client.query('select pg_advisory_unlock($1, $2)', [lockClass, lockObject]).catch(() => undefined);
