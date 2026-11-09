@@ -1,280 +1,138 @@
-# Friendster Modern 🚀
+# Friendster Modern
 
-A modern, full-stack social media platform built with TypeScript, featuring real-time interactions, containerized deployment, and a sleek minimalist design. Visit it here [https://friendster-social.netlify.app](https://friendster-social.netlify.app).
+A full-stack social network written end to end in TypeScript: posts with images, threaded replies, likes,
+follows, real-time notifications and direct messages. Live demo: [friendster-social.netlify.app](https://friendster-social.netlify.app).
 
-![Tech Stack](https://img.shields.io/badge/Stack-TypeScript%20%7C%20React%20%7C%20Node.js%20%7C%20PostgreSQL-blue)
-![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)
-![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF?logo=github-actions)
+![Stack](https://img.shields.io/badge/stack-React%2019%20%7C%20Express%205%20%7C%20Postgres-0b7285)
+![License](https://img.shields.io/badge/license-MIT-2f9e44)
 
-> This project is a remake from one of my old projects I have done during my time I attended university, so it's pretty nostagic to me.
+> A remake of a project I first built at university, rebuilt with the practices I use today.
 
-## ✨ Features
+<!-- Add a screenshot of the home feed at docs/screenshot.png, then replace this comment with: ![Home feed](docs/screenshot.png) -->
 
-### Core Features
-- 🔐 **JWT Authentication** - Secure login/register with access & refresh tokens
-- 📝 **Posts** - Create, read, update, delete posts with image support
-- 💬 **Comments** - Nested comments with likes
-- ❤️ **Likes** - Like/unlike posts and comments
-- 👤 **User Profiles** - Customizable profiles with avatars and cover images
-- 🔍 **Search** - Search users and posts
-- 🔔 **Notifications** - Real-time notifications for likes, comments, and follows
-- 👥 **Follow System** - Follow/unfollow users with personalized feed
+## Highlights
 
-### Additional Features
-- ⚡ **Real-time** - Socket.io for live notifications and messaging
-- 🐳 **Dockerized** - Complete containerization with Docker Compose
-- 🔄 **CI Pipeline** - GitHub Actions runs type checks, lint, API integration tests, builds, and a Docker stack smoke test; image publishing is opt-in
-- 📱 **Responsive Design** - Mobile-first approach with dark theme
-- 🎨 **Modern UI** - Glassmorphism effects with smooth animations
+- **Auth that holds up**: short-lived access tokens, rotating refresh tokens in httpOnly cookies, reuse detection
+  that revokes the whole session family, and rate limits on credential endpoints.
+- **Correct under retries and concurrency**: idempotent post and message publishing (`clientId`), image claims and
+  orphan sweeps that can never both win, durable file-deletion jobs with backoff.
+- **Stable pagination**: keyset cursors (`created_at, id`) for feeds and messages, so new posts never shift or
+  duplicate items while scrolling.
+- **Real-time without drift**: Socket.io pushes updates; after a reconnect the client pages forward from its last
+  known message and only marks messages read once the gap is filled.
+- **Safe uploads**: signature sniffing, full decode and re-encode with sharp, pixel limits, metadata stripped.
+- **Operable**: structured JSON logs (pino) with a request ID on every log line and error body, `/health` and
+  `/ready` probes, graceful shutdown that drains traffic first, validated configuration at startup.
+- **Hardened delivery**: non-root containers, CSP and security headers at the edge, least-privilege CI tokens,
+  coverage thresholds, browser end-to-end tests against the real Docker stack, Dependabot.
 
-## 🛠 Tech Stack
+## Architecture
 
-### Frontend
-- **Framework**: React 18+ with TypeScript
-- **Build Tool**: Vite
-- **Styling**: Tailwind CSS 3.4+
-- **UI Components**: shadcn/ui (40+ components)
-- **State Management**: Zustand
-- **Data Fetching**: TanStack Query (React Query)
-- **Routing**: React Router v6
-- **Real-time**: Socket.io-client
-- **Icons**: Lucide React
-
-### Backend
-- **Runtime**: Node.js 22+
-- **Framework**: Express.js with TypeScript
-- **Database**: PostgreSQL on [Neon](https://neon.tech), Drizzle ORM, drizzle-kit migrations
-- **Authentication**: JWT (access + refresh tokens)
-- **Real-time**: Socket.io
-- **Validation**: Zod
-- **Security**: Helmet, CORS, Rate Limiting
-
-### DevOps
-- **Containerization**: Docker + Docker Compose
-- **CI/CD**: GitHub Actions
-- **Testing**: Vitest + Supertest API integration tests and focused frontend tests; browser end-to-end tests are not yet implemented
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Node.js 22.12+
-- Docker with the Compose plugin (`docker compose`), optional
-
-### Option 1: Full stack in Docker
-
-```bash
-cp .env.example .env
-# Fill in JWT_ACCESS_SECRET and JWT_REFRESH_SECRET (two different values,
-# at least 32 characters each, e.g. `openssl rand -hex 48`)
-docker compose up -d --build
+```mermaid
+flowchart LR
+  B[Browser<br/>React 19 SPA] -- HTTPS --> N[nginx<br/>static files + CSP]
+  N -- /api, /uploads --> A[Express 5 API]
+  N -- /socket.io --> A
+  A -- Drizzle over pg --> D[(Neon Postgres)]
+  A -- files --> V[(uploads volume)]
+  M[migrate job] -- drizzle migrations --> D
 ```
 
-The site is served at http://localhost. nginx forwards `/api`, `/socket.io`
-and `/uploads` to the API container, so no other ports are exposed.
-This command uses the bundled Postgres container. For Neon, set `DATABASE_URL`
-to Neon’s pooled connection URL and `DATABASE_URL_DIRECT` to its direct URL in
-`.env`, then run `docker compose -f docker-compose.neon.yml up -d --build`.
+| Layer | Choices | Why |
+| --- | --- | --- |
+| Web | React 19, Vite 7, Tailwind, Radix primitives, TanStack Query, Zustand | Server state in Query (cache, retries, infinite lists); a tiny store only for the session |
+| API | Express 5, zod 4, Socket.io, multer + sharp, pino | Async errors handled natively by Express 5; every input parsed by zod at the edge |
+| Data | Postgres on Neon, Drizzle ORM + drizzle-kit | Typed SQL with generated, reviewable migrations; constraints enforce integrity |
+| Tests | Vitest + Supertest on PGlite (in-memory Postgres), Testing Library, Playwright | Real SQL semantics in unit-speed tests; browser tests cover the critical paths |
+| Delivery | Docker, Compose profiles, GitHub Actions | One compose file for Neon or bundled Postgres; images tagged by commit SHA |
 
-### Option 2: Local development
+More detail in [ARCHITECTURE.md](ARCHITECTURE.md) and [DESIGN.md](DESIGN.md).
+
+## Getting started
+
+Requires Node.js 22.12+ (`nvm use` reads `.nvmrc`). Docker is optional.
+
+### Local development
 
 ```bash
-npm install                  # installs both apps (npm workspaces, one lockfile)
+npm install
 cp apps/api/.env.example apps/api/.env
 cp apps/web/.env.example apps/web/.env
-# Set DATABASE_URL in apps/api/.env to your Neon connection string,
-# or start a local Postgres on 127.0.0.1:5432 instead:
+# Point DATABASE_URL in apps/api/.env at your Neon database, or start a local Postgres:
 npm run db:dev
-npm run dev                  # API on :5000, web on :5173
+npm run dev            # API on :5000 (migrates first), web on :5173
 ```
 
-### Database migrations
-
-The schema lives in `apps/api/src/database/schema.ts`. After changing it:
+### Full stack in Docker
 
 ```bash
-npm run db:generate -w @friendster/api   # writes a new SQL file to apps/api/migrations
-npm run db:migrate -w @friendster/api    # applies it to the configured database
+cp .env.example .env   # fill in DATABASE_URL, both JWT secrets and CORS_ORIGIN
+docker compose up -d --build                     # with Neon
+docker compose --profile local-db up -d --build  # with bundled Postgres (also set POSTGRES_PASSWORD)
 ```
 
-Compose runs the compiled migration job once before starting the API, using
-`DATABASE_URL_DIRECT`. The API uses `DATABASE_URL` with bounded pool and query
-timeouts. Local API development applies pending migrations before the watch
-process starts.
+The site is served on http://localhost. nginx forwards `/api`, `/socket.io` and `/uploads` to the API, so it is
+the only exposed port. A one-shot `migrate` container applies migrations (via `DATABASE_URL_DIRECT`) before the API
+starts.
 
-### Checks (the same ones CI runs)
+### Neon setup
 
-```bash
-npm run typecheck
-npm run lint
-npm test                     # API integration tests (in-memory Postgres via PGlite)
-npm run build
-```
+1. Create a project at [neon.tech](https://neon.tech) and open **Connect**.
+2. Use the **pooled** connection string (host contains `-pooler`) as `DATABASE_URL`.
+3. Use the **direct** connection string as `DATABASE_URL_DIRECT` for migrations.
 
-## 📁 Project Structure
+## Scripts
 
-```
-friendster-modern/
-├── apps/
-│   ├── api/                 # Express backend
-│   │   ├── src/
-│   │   │   ├── config/      # Env config
-│   │   │   ├── database/    # Drizzle schema, connection, ID generator
-│   │   │   ├── controllers/ # Route controllers
-│   │   │   ├── middleware/  # Auth & error handlers
-│   │   │   ├── routes/      # API routes
-│   │   │   ├── types/       # TypeScript types
-│   │   │   └── utils/       # JWT & validation
-│   │   ├── migrations/      # SQL migrations generated by drizzle-kit
-│   │   └── package.json
-│   │
-│   └── web/                 # React frontend
-│       ├── src/
-│       │   ├── components/  # UI components
-│       │   ├── layouts/     # Page layouts
-│       │   ├── lib/         # API client
-│       │   ├── pages/       # Route pages
-│       │   ├── store/       # Zustand stores
-│       │   └── types/       # TypeScript types
-│       └── package.json
-│
-├── docker/                  # Docker configurations
-├── .github/workflows/       # CI/CD pipelines
-├── docker-compose.yml       # Docker orchestration
-└── README.md
-```
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | API and web in watch mode |
+| `npm run typecheck` / `npm run lint` | TypeScript and ESLint (including jsx-a11y) for both apps |
+| `npm test` | API integration tests and web unit tests |
+| `npm run test:coverage -w @friendster/api` | API tests with coverage thresholds |
+| `npm run test:e2e -w @friendster/web` | Playwright against a running stack (`E2E_BASE_URL`, default :5173) |
+| `npm run build` | Production builds of both apps |
+| `npm run db:generate -w @friendster/api` | Generate a migration after editing `schema.ts` |
+| `npm run db:migrate -w @friendster/api` | Apply pending migrations |
 
-## 🔌 API Endpoints
+## Testing strategy
 
-### Authentication
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login user
-- `POST /api/auth/refresh` - Refresh access token
-- `POST /api/auth/logout` - Revoke the refresh token
-- `GET /api/auth/me` - Get current user
+- **API integration tests** run every route through Supertest against PGlite, a WASM build of Postgres, so
+  constraints, transactions and full-text search behave as in production. CI fails below 70% line coverage.
+- **Web tests** cover the realtime connection lifecycle, message catch-up after reconnects and the chat thread.
+- **End-to-end tests** (Playwright) sign up, post, like, reply and sign back in against the production Docker
+  images in CI.
+- CI also checks that generated migrations match the schema and audits production dependencies.
 
-### Health
-- `GET /health` - Process is up
-- `GET /ready` - Database is connected (503 otherwise)
+## Configuration
 
-### Posts
-- `GET /api/posts` - Get all posts
-- `GET /api/posts/feed` - Get personalized feed
-- `GET /api/posts/:id` - Get single post
-- `POST /api/posts` - Create post
-- `PUT /api/posts/:id` - Update post
-- `DELETE /api/posts/:id` - Delete post
-- `POST /api/posts/:id/like` - Like post
-- `DELETE /api/posts/:id/like` - Unlike post
+The API validates its environment at startup and refuses to boot in production with a missing database URL,
+missing or short JWT secrets, identical secrets, or no `CORS_ORIGIN`. See `apps/api/.env.example` and `.env.example`.
 
-### Comments
-- `GET /api/posts/:id/comments` - Get comments
-- `POST /api/posts/:id/comments` - Create comment
-- `PUT /api/posts/:id/comments/:commentId` - Update comment
-- `DELETE /api/posts/:id/comments/:commentId` - Delete comment
-- `POST /api/posts/:id/comments/:commentId/like` - Like comment
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` / `DATABASE_URL_DIRECT` | Pooled connection for the API, direct connection for migrations |
+| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | Two different random values, 32+ characters (`openssl rand -hex 48`) |
+| `CORS_ORIGIN` | Comma-separated list of site origins allowed to call the API |
+| `LOG_LEVEL` | `debug` in development, `info` in production by default |
+| `VITE_API_URL` | Web build only; omit for same-origin `/api` (the Docker setup) |
 
-### Users
-- `GET /api/users/:handle` - Get user profile
-- `PUT /api/users/profile` - Update profile
-- `POST /api/users/:handle/follow` - Follow user
-- `DELETE /api/users/:handle/follow` - Unfollow user
-- `GET /api/users/search?q=` - Search users
+## Deployment
 
-### Notifications
-- `GET /api/notifications` - Get notifications
-- `PUT /api/notifications/:id/read` - Mark as read
-- `PUT /api/notifications/read-all` - Mark all as read
+The CD workflow is opt-in: set the repository variable `DOCKER_PUBLISH=true` and the secrets `DOCKER_USERNAME` /
+`DOCKER_PASSWORD`. After CI passes on a push to `main`, it publishes both images tagged with the commit SHA. To run
+them: `IMAGE_PREFIX=<user> IMAGE_TAG=<sha> docker compose pull && docker compose up -d --no-build`.
 
-## 🎨 Design System
+Before going live: terminate TLS in front of nginx (then add HSTS), back up the `api_uploads` volume, and send logs
+to your aggregator of choice.
 
-### Colors
-- **Primary**: Indigo (#6366f1)
-- **Accent**: Purple (#a855f7)
-- **Background**: Dark navy (#0f0f23)
-- **Card**: Dark purple-blue (#1a1a2e)
+## Known trade-offs
 
-### Typography
-- **Font**: Inter
-- **Scale**: 12px to 36px
+- Uploaded images live on a local volume, which limits the API to one instance. Object storage plus a Socket.io
+  Redis adapter would remove that limit.
+- Controllers talk to Drizzle directly rather than through a repository layer; with one database and typed queries,
+  the extra indirection was not worth it at this size.
+- The UI is dark-only by design.
 
-### Effects
-- Glassmorphism with backdrop blur
-- Gradient accents
-- Smooth micro-interactions
+## License
 
-## 🔒 Security Features
-
-- JWT authentication with rotating, revocable refresh tokens (reuse detection)
-- Uploads checked by file signature, not just declared type
-- Password hashing with bcrypt (12 rounds)
-- Rate limiting on API endpoints
-- CORS protection
-- Helmet security headers
-- Input validation with Zod
-- Parameterized SQL via Drizzle; foreign keys and unique constraints enforce data integrity
-
-## 🚀 Deployment
-
-```bash
-docker compose up -d --build   # bundled Postgres
-docker compose -f docker-compose.neon.yml up -d --build  # Neon
-docker compose logs -f         # view logs
-docker compose down            # stop
-```
-
-The CD workflow publishes images to Docker Hub after CI passes on `main`. It is
-off by default: set the repository variable `DOCKER_PUBLISH=true` and the
-secrets `DOCKER_USERNAME` / `DOCKER_PASSWORD` to enable it.
-
-### Production Checklist
-
-- [ ] Change JWT secrets
-- [ ] Set Neon pooled `DATABASE_URL` and direct `DATABASE_URL_DIRECT` (Compose migrates before the API)
-- [ ] Back up the `api_uploads` volume (uploaded images live there)
-- [ ] Set up SSL certificates
-- [ ] Configure environment variables
-- [ ] Set up monitoring (optional)
-
-## 📝 Environment Variables
-
-### Backend (.env)
-```env
-NODE_ENV=production
-PORT=5000
-DATABASE_URL=postgresql://user:password@ep-xxxx-pooler.region.aws.neon.tech/friendster?sslmode=require
-DATABASE_URL_DIRECT=postgresql://user:password@ep-xxxx.region.aws.neon.tech/friendster?sslmode=require
-JWT_ACCESS_SECRET=<32+ random characters>
-JWT_REFRESH_SECRET=<32+ random characters, different>
-# Comma-separated list of allowed site addresses (required in production)
-CORS_ORIGIN=https://yourdomain.com,https://www.yourdomain.com
-```
-
-### Frontend (.env)
-```env
-# Omit to use same-origin /api (Docker setup)
-VITE_API_URL=https://api.yourdomain.com/api
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-## 🙏 Acknowledgments
-
-- [shadcn/ui](https://ui.shadcn.com/) for beautiful UI components
-- [Tailwind CSS](https://tailwindcss.com/) for utility-first CSS
-- [Neon](https://neon.tech/) for serverless PostgreSQL
-- [Drizzle ORM](https://orm.drizzle.team/) for type-safe SQL
-- [Socket.io](https://socket.io/) for real-time functionality
-
----
-
-Built with ❤️ using TypeScript, React, and Node.js
+[MIT](LICENSE)

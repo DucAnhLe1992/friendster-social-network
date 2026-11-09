@@ -6,31 +6,31 @@ A modern, full-stack social media platform built with TypeScript, featuring real
 ## Tech Stack
 
 ### Frontend
-- **Framework**: React 18+ with TypeScript
-- **Build Tool**: Vite
+- **Framework**: React 19 with TypeScript
+- **Build Tool**: Vite 7
 - **Styling**: Tailwind CSS 3.4+
-- **UI Components**: shadcn/ui
+- **UI Components**: a small set of shadcn/ui components on Radix primitives
 - **State Management**: Zustand + React Query (TanStack Query)
-- **Routing**: React Router v6
+- **Routing**: React Router
 - **Real-time**: Socket.io-client
-- **Forms**: React Hook Form + Zod
 - **HTTP Client**: Axios
 
 ### Backend
 - **Runtime**: Node.js 22.12+
-- **Framework**: Express.js with TypeScript
+- **Framework**: Express 5 with TypeScript
 - **Database**: PostgreSQL on Neon, with Drizzle ORM and drizzle-kit migrations
 - **Authentication**: JWT (access + refresh tokens)
 - **Real-time**: Socket.io
 - **File Upload**: Multer to local disk; every image is decoded and re-encoded with sharp (unused decoders blocked)
-- **Validation**: Zod
+- **Validation**: Zod (request input and environment configuration)
+- **Logging**: pino with per-request IDs (`X-Request-Id`), secrets redacted
 - **Security**: Helmet, CORS, Rate Limiting
 
 ### DevOps & Infrastructure
 - **Containerization**: Docker + Docker Compose
 - **CI/CD**: GitHub Actions
-- **Testing**: Vitest + Supertest API integration tests and focused frontend tests; browser end-to-end tests are not yet implemented
-- **Code Quality**: ESLint and TypeScript type checks (enforced in CI), production dependency audit
+- **Testing**: Vitest + Supertest API integration tests on PGlite (in-memory Postgres) with coverage thresholds, Vitest + Testing Library frontend tests, Playwright end-to-end tests against the Docker stack in CI
+- **Code Quality**: ESLint (with jsx-a11y) and TypeScript type checks enforced in CI, production dependency audit, Dependabot
 
 ## Project Structure
 
@@ -42,9 +42,9 @@ friendster-modern/
 ├── docker/
 │   ├── Dockerfile.web
 │   ├── Dockerfile.api
-│   └── nginx.conf
-├── docker-compose.yml
-├── docker-compose.neon.yml
+│   ├── nginx.conf
+│   └── security-headers.conf
+├── docker-compose.yml       # Neon by default; --profile local-db adds Postgres
 ├── docker-compose.dev.yml
 ├── .github/
 │   └── workflows/
@@ -60,7 +60,7 @@ friendster-modern/
 - Password hashing with bcrypt
 - Protected routes middleware
 
-### Posts (formerly "Screams")
+### Posts
 - Create, read, update, delete posts
 - Hashtag and mention highlighting
 - Image attachments
@@ -77,7 +77,7 @@ friendster-modern/
 
 ### Feed
 - Personalized feed based on following
-- Infinite scroll pagination
+- Infinite scroll with keyset (cursor) pagination
 
 ### Notifications
 - Real-time notifications
@@ -100,10 +100,9 @@ friendster-modern/
 
 ## Planned (not implemented)
 
-- Stories
 - Engagement-based feed ranking
 - Admin dashboard and content moderation
-- Frontend and browser end-to-end tests
+- Object storage for uploads and a Socket.io Redis adapter (needed to run more than one API instance)
 
 ## Database Schema
 
@@ -157,7 +156,10 @@ themselves, so they cannot drift or move backward. After a realtime reconnect th
 - GET /api/auth/me
 
 ### Users
+- GET /api/users/search
+- GET /api/users/suggestions
 - GET /api/users/:handle
+- GET /api/users/:handle/replies
 - PUT /api/users/profile
 - POST /api/users/avatar
 - POST /api/users/cover
@@ -167,7 +169,12 @@ themselves, so they cannot drift or move backward. After a realtime reconnect th
 - GET /api/users/:handle/following
 
 ### Posts
-- GET /api/posts (feed)
+- GET /api/posts (all posts, newest first)
+- GET /api/posts/feed (followed accounts)
+- GET /api/posts/trending
+- GET /api/posts/search
+- GET /api/posts/user/:handle
+- POST /api/posts/images
 - POST /api/posts
 - GET /api/posts/:id
 - PUT /api/posts/:id
@@ -178,21 +185,27 @@ themselves, so they cannot drift or move backward. After a realtime reconnect th
 ### Comments
 - GET /api/posts/:id/comments
 - POST /api/posts/:id/comments
-- PUT /api/comments/:id
-- DELETE /api/comments/:id
-- POST /api/comments/:id/like
-- DELETE /api/comments/:id/like
+- GET /api/posts/:id/comments/:commentId/replies
+- PUT /api/posts/:id/comments/:commentId
+- DELETE /api/posts/:id/comments/:commentId
+- POST /api/posts/:id/comments/:commentId/like
+- DELETE /api/posts/:id/comments/:commentId/like
 
 ### Notifications
 - GET /api/notifications
 - PUT /api/notifications/:id/read
 - PUT /api/notifications/read-all
+- GET /api/notifications/unread-count
+- DELETE /api/notifications/:id
 
 ### Messages
 - GET /api/conversations
+- GET /api/conversations/unread-count
+- GET /api/conversations/:id
 - GET /api/conversations/:id/messages
 - POST /api/conversations
 - POST /api/conversations/:id/messages
+- POST /api/conversations/:id/read
 
 ## Real-time Events (Socket.io)
 
@@ -235,7 +248,7 @@ Messages are sent and marked read over HTTP; the socket carries live updates onl
 ## Performance Optimizations
 
 1. **Database Indexes**: On frequently queried fields
-2. **Pagination**: Page-based for feeds, cursor-based (timestamp + id) for messages
+2. **Pagination**: Keyset cursors (`created_at`, `id`) for post lists and messages, so inserts never shift pages and no `COUNT(*)` runs per request; page numbers for comments and notifications
 3. **Image Processing**: Uploads are resized to at most 4096 px and stripped of metadata
 4. **Code Splitting**: Route-based lazy loading plus separate vendor chunks
 
@@ -244,24 +257,22 @@ Possible future work: Redis caching, a CDN, and a Socket.io Redis adapter for ru
 ## Deployment Strategy
 
 ### Development
-```bash
-docker compose up
-```
+`npm run dev` runs both apps in watch mode; `npm run db:dev` starts a local Postgres if you are not using Neon.
 
 ### Production
-`docker compose up -d` runs the API with bundled Postgres. For Neon, use
-`docker compose -f docker-compose.neon.yml up -d`; that stack contains no local
-database service. Both stacks run a one-shot migration container before the API,
-and nginx serves the web app and proxies `/api`, `/socket.io` and `/uploads`.
-Uploaded files live in a Docker volume.
+`docker compose up -d` runs a one-shot migration container, the API and nginx against Neon. Adding
+`--profile local-db` also starts a bundled Postgres. nginx runs as a non-root user, serves the web app with a
+Content Security Policy and other security headers, and proxies `/api`, `/socket.io` and `/uploads`. On shutdown the
+API reports not-ready, drains in-flight requests and sockets, then closes its database pool. Uploaded files live in
+a Docker volume.
 
 ## CI/CD Pipeline
 
 ### CI (pushes and pull requests to main/develop)
 - Production dependency audit (fails on high severity)
-- API: type check, lint, integration tests, build
-- Web: lint, type check, build
-- Docker: build images and smoke-test the running stack
+- API: type check, lint, migration drift check, integration tests with coverage thresholds, build
+- Web: lint, unit tests, type check, build
+- Docker: build images, smoke-test the running stack (including security headers), run Playwright end-to-end tests
 
 ### CD (opt-in)
-- Publishes Docker images tagged with the commit SHA after CI passes; it does not deploy a server
+- Publishes Docker images tagged only with the commit SHA after CI passes on a push to `main`; it does not deploy a server

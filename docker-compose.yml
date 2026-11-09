@@ -1,15 +1,27 @@
-# Production-style stack. Copy .env.example to .env and set real secrets first.
-# To run published images instead of building: set IMAGE_PREFIX=<dockerhub user> and IMAGE_TAG=<commit sha>,
+# Production-style stack. Copy .env.example to .env and fill it in first.
+#
+#   Neon (recommended):     docker compose up -d --build
+#   Bundled Postgres:       docker compose --profile local-db up -d --build
+#
+# To run published images instead of building: set IMAGE_PREFIX=<registry user> and IMAGE_TAG=<commit sha>,
 # then `docker compose pull && docker compose up -d --no-build`.
-# For local development (database only) use: docker compose -f docker-compose.dev.yml up -d
-# Set DATABASE_URL in .env to your Neon connection string; without it the bundled postgres service is used.
+# For day-to-day development (database only) use docker-compose.dev.yml instead.
+
+x-api-image: &api-image
+  image: ${IMAGE_PREFIX:-friendster}/friendster-api:${IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.api
+
 services:
   postgres:
+    profiles: ["local-db"]
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: friendster
-      POSTGRES_PASSWORD: friendster
+      # Required with the local-db profile; Postgres refuses to start with an empty password.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
       POSTGRES_DB: friendster
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -21,21 +33,37 @@ services:
     networks:
       - backend
 
+  migrate:
+    <<: *api-image
+    restart: "no"
+    init: true
+    command: ["node", "dist/migrate.js"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-${DATABASE_URL}}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    networks:
+      - backend
+
   api:
-    image: ${IMAGE_PREFIX:-friendster}/friendster-api:${IMAGE_TAG:-local}
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.api
+    <<: *api-image
     restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
     environment:
       NODE_ENV: production
       PORT: 5000
-      DATABASE_URL: ${DATABASE_URL:-postgresql://friendster:friendster@postgres:5432/friendster}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
       JWT_ACCESS_EXPIRY: ${JWT_ACCESS_EXPIRY:-15m}
       JWT_REFRESH_EXPIRY: ${JWT_REFRESH_EXPIRY:-7d}
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+      CORS_ORIGIN: ${CORS_ORIGIN:?Set CORS_ORIGIN to your public site origin in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - api_uploads:/app/apps/api/uploads
     depends_on:
@@ -45,23 +73,6 @@ services:
       - backend
       - frontend
 
-  migrate:
-    image: ${IMAGE_PREFIX:-friendster}/friendster-api:${IMAGE_TAG:-local}
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.api
-    restart: "no"
-    command: ["node", "dist/migrate.js"]
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: ${DATABASE_URL:-postgresql://friendster:friendster@postgres:5432/friendster}
-      DATABASE_URL_DIRECT: ${DATABASE_URL_DIRECT:-${DATABASE_URL:-postgresql://friendster:friendster@postgres:5432/friendster}}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - backend
-
   web:
     image: ${IMAGE_PREFIX:-friendster}/friendster-web:${IMAGE_TAG:-local}
     build:
@@ -69,7 +80,7 @@ services:
       dockerfile: docker/Dockerfile.web
     restart: unless-stopped
     ports:
-      - "${WEB_PORT:-80}:80"
+      - "${WEB_PORT:-80}:8080"
     depends_on:
       api:
         condition: service_healthy

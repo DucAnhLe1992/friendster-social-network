@@ -1,57 +1,67 @@
-import { assertProductionConfig, env } from './config/env';
+import { env } from './config/env';
 import { closePools } from './database/db';
 import { createApp } from './app';
 import { processFileDeletionJobs, sweepAbandonedUploads } from './services/media';
 import { deleteExpiredSessions } from './services/sessions';
+import { logger } from './utils/logger';
 
 const ABANDONED_UPLOAD_AGE_MS = 24 * 60 * 60 * 1000;
 const MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
+const DRAIN_DELAY_MS = env.NODE_ENV === 'production' ? 5000 : 0;
+const FORCE_EXIT_MS = 15000;
 
 const start = async () => {
-  assertProductionConfig();
-  const { httpServer, io } = createApp();
+  const { httpServer, io, startDraining } = createApp();
   httpServer.listen(env.PORT, () => {
-    console.log(`Friendster API listening on port ${env.PORT} (${env.NODE_ENV})`);
+    logger.info({ port: env.PORT, env: env.NODE_ENV }, 'API listening');
   });
 
   const sweep = () => {
     void sweepAbandonedUploads(ABANDONED_UPLOAD_AGE_MS)
-      .then((count) => count && console.log(`Removed ${count} abandoned upload(s)`))
-      .catch((error) => console.error('Upload sweep failed:', error));
+      .then((count) => count && logger.info({ count }, 'removed abandoned uploads'))
+      .catch((err) => logger.error({ err }, 'upload sweep failed'));
     void deleteExpiredSessions()
-      .then((count) => count && console.log(`Removed ${count} expired refresh session(s)`))
-      .catch((error) => console.error('Refresh-session cleanup failed:', error));
+      .then((count) => count && logger.info({ count }, 'removed expired refresh sessions'))
+      .catch((err) => logger.error({ err }, 'refresh-session cleanup failed'));
     void processFileDeletionJobs()
       .then(({ completed, failed }) => {
-        if (completed) console.log(`Removed ${completed} queued file(s)`);
-        if (failed) console.error(`${failed} queued file deletion(s) will be retried`);
+        if (completed) logger.info({ count: completed }, 'removed queued files');
+        if (failed) logger.warn({ count: failed }, 'queued file deletions will be retried');
       })
-      .catch((error) => console.error('File-deletion worker failed:', error));
+      .catch((err) => logger.error({ err }, 'file-deletion worker failed'));
   };
   const sweeper = setInterval(sweep, MAINTENANCE_INTERVAL_MS);
   sweeper.unref();
   void sweep();
 
-  const shutdown = (signal: string) => {
-    console.log(`${signal} received, shutting down`);
+  let shuttingDown = false;
+  const shutdown = (reason: string, exitCode = 0) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ reason }, 'shutting down');
     clearInterval(sweeper);
-    const force = setTimeout(() => process.exit(1), 10000);
-    force.unref();
-    io.close();
-    httpServer.close(async () => {
-      await closePools();
-      process.exit(0);
-    });
+    startDraining();
+    setTimeout(() => process.exit(1), FORCE_EXIT_MS).unref();
+
+    // Give the load balancer a moment to see /ready fail, then stop accepting and close idle keep-alives.
+    setTimeout(() => {
+      io.close();
+      httpServer.close(async () => {
+        await closePools().catch((err) => logger.error({ err }, 'closing database pools failed'));
+        process.exit(exitCode);
+      });
+      httpServer.closeIdleConnections();
+    }, DRAIN_DELAY_MS).unref();
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('unhandledRejection', (err) => {
+    logger.fatal({ err }, 'unhandled promise rejection');
+    shutdown('unhandledRejection', 1);
+  });
 };
 
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled rejection:', err);
-});
-
-start().catch((error) => {
-  console.error('Failed to start server:', error);
+start().catch((err) => {
+  logger.fatal({ err }, 'failed to start server');
   process.exit(1);
 });

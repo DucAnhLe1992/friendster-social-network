@@ -4,6 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Pool } from 'pg';
 import { env } from '../config/env';
 import * as schema from './schema';
+import { logger } from '../utils/logger';
 
 export const MIGRATIONS_FOLDER = path.join(__dirname, '../../migrations');
 
@@ -15,23 +16,26 @@ export const pool = new Pool({
 	idleTimeoutMillis: 30_000,
 	query_timeout: 30_000,
 });
-pool.on('error', (error) => console.error('Unexpected runtime database pool error:', error));
+pool.on('error', (err) => logger.error({ err }, 'unexpected database pool error'));
 
 export const db = drizzle({ client: pool, schema });
-
-const migrationPool = new Pool({
-	connectionString: env.DATABASE_URL_DIRECT,
-	max: 1,
-	connectionTimeoutMillis: 10_000,
-	idleTimeoutMillis: 30_000,
-	query_timeout: 60_000,
-});
-migrationPool.on('error', (error) => console.error('Unexpected migration database pool error:', error));
-const migrationDb = drizzle({ client: migrationPool, schema });
 
 export type Database = typeof db;
 export type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 
-export const runMigrations = () => migrate(migrationDb, { migrationsFolder: MIGRATIONS_FOLDER });
+// Opened only by the migration entry point, so the running API never holds a direct (unpooled) connection.
+export const runMigrations = async () => {
+	const migrationPool = new Pool({
+		connectionString: env.DATABASE_URL_DIRECT,
+		max: 1,
+		connectionTimeoutMillis: 10_000,
+		query_timeout: 60_000,
+	});
+	try {
+		await migrate(drizzle({ client: migrationPool, schema }), { migrationsFolder: MIGRATIONS_FOLDER });
+	} finally {
+		await migrationPool.end();
+	}
+};
 
-export const closePools = async () => Promise.all([pool.end(), migrationPool.end()]);
+export const closePools = () => pool.end();

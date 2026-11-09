@@ -7,7 +7,7 @@ import { pool } from './database/db';
 import { createServer } from 'http';
 
 import { env } from './config/env';
-import { errorHandler, notFound } from './middleware/errorHandler';
+import { errorHandler, notFound, requestLogger } from './middleware/errorHandler';
 import { UPLOADS_ROOT } from './middleware/upload';
 import { setupRealtime } from './realtime';
 
@@ -24,7 +24,9 @@ export const createApp = () => {
   const io = setupRealtime(httpServer);
   app.set('io', io);
   app.set('trust proxy', 1);
+  let draining = false;
 
+  app.use(requestLogger);
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
 
@@ -33,6 +35,8 @@ export const createApp = () => {
     rateLimit({
       windowMs: env.RATE_LIMIT_WINDOW_MS,
       max: env.RATE_LIMIT_MAX_REQUESTS,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
       message: { success: false, error: 'Too many requests, please try again later' },
     })
   );
@@ -47,7 +51,12 @@ export const createApp = () => {
     res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
   });
 
+  // Fails while shutting down so the load balancer stops routing here before connections close.
   app.get('/ready', async (_req, res) => {
+    if (draining) {
+      res.status(503).json({ status: 'DRAINING', database: null });
+      return;
+    }
     const ready = await pool.query('select 1').then(() => true, () => false);
     res.status(ready ? 200 : 503).json({ status: ready ? 'READY' : 'UNAVAILABLE', database: ready });
   });
@@ -62,5 +71,12 @@ export const createApp = () => {
   app.use(notFound);
   app.use(errorHandler);
 
-  return { app, httpServer, io };
+  return {
+    app,
+    httpServer,
+    io,
+    startDraining: () => {
+      draining = true;
+    },
+  };
 };

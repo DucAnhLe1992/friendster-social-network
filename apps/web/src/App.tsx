@@ -1,5 +1,5 @@
 import { Fragment, lazy, Suspense, useEffect, type ReactNode } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 import axios from 'axios';
@@ -7,6 +7,7 @@ import axios from 'axios';
 import { useAuthStore } from '@/store/authStore';
 import { apiClient } from '@/lib/api';
 import { RealtimeProvider } from '@/context/RealtimeContext';
+import ErrorBoundary from '@/components/custom/ErrorBoundary';
 
 import MainLayout from '@/layouts/MainLayout';
 import AuthLayout from '@/layouts/AuthLayout';
@@ -82,14 +83,23 @@ const PageFallback = () => (
   </div>
 );
 
+const PageBoundary = ({ children }: { children: ReactNode }) => {
+  const { pathname } = useLocation();
+  return (
+    <ErrorBoundary resetKey={pathname}>
+      <Suspense fallback={<PageFallback />}>{children}</Suspense>
+    </ErrorBoundary>
+  );
+};
+
 const protectedPage = (page: ReactNode) => (
   <ProtectedRoute>
-    <Suspense fallback={<PageFallback />}>{page}</Suspense>
+    <PageBoundary>{page}</PageBoundary>
   </ProtectedRoute>
 );
 const publicPage = (page: ReactNode) => (
   <PublicRoute>
-    <Suspense fallback={<PageFallback />}>{page}</Suspense>
+    <PageBoundary>{page}</PageBoundary>
   </PublicRoute>
 );
 
@@ -100,6 +110,7 @@ const AccountScope = ({ children }: { children: ReactNode }) => {
 
 function App() {
   return (
+    <ErrorBoundary fullScreen>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthInitializer>
@@ -119,7 +130,7 @@ function App() {
                   <Route path="/messages/:id" element={protectedPage(<Messages />)} />
                   <Route path="/profile/:handle" element={protectedPage(<Profile />)} />
                   <Route path="/post/:id" element={protectedPage(<PostDetail />)} />
-                  <Route path="*" element={<Suspense fallback={<PageFallback />}><NotFound /></Suspense>} />
+                  <Route path="*" element={<PageBoundary><NotFound /></PageBoundary>} />
                 </Route>
               </Routes>
             </AccountScope>
@@ -138,6 +149,7 @@ function App() {
         }}
       />
     </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 

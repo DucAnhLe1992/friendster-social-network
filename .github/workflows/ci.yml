@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -55,8 +58,16 @@ jobs:
           npm run db:generate -w @friendster/api
           test -z "$(git status --porcelain apps/api/migrations)"
 
-      - name: Test
-        run: npm test -w @friendster/api
+      - name: Test with coverage
+        run: npm run test:coverage -w @friendster/api
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-coverage
+          path: apps/api/coverage
+          if-no-files-found: ignore
 
       - name: Build
         run: npm run build -w @friendster/api
@@ -88,10 +99,20 @@ jobs:
     runs-on: ubuntu-latest
     needs: [api, web]
     env:
+      COMPOSE_PROFILES: local-db
+      POSTGRES_PASSWORD: ci-only-postgres-password
+      DATABASE_URL: postgresql://friendster:ci-only-postgres-password@postgres:5432/friendster
       JWT_ACCESS_SECRET: ci-only-access-secret-not-for-production-0001
       JWT_REFRESH_SECRET: ci-only-refresh-secret-not-for-production-0002
+      CORS_ORIGIN: http://localhost
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Build images
         run: docker compose build
@@ -100,7 +121,26 @@ jobs:
         run: |
           docker compose up -d --wait --wait-timeout 180
           curl -fsS http://localhost/ | grep -q '<div id="root">'
+          curl -fsSI http://localhost/ | grep -qi 'content-security-policy'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost/api/auth/me)" = 401
+
+      - name: Install Playwright
+        run: |
+          npm ci
+          npx -w @friendster/web playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        env:
+          E2E_BASE_URL: http://localhost
+        run: npm run test:e2e -w @friendster/web
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          if-no-files-found: ignore
 
       - name: Logs on failure
         if: failure()

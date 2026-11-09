@@ -10,6 +10,7 @@ import CommentComposer from '@/components/custom/CommentComposer';
 import EmptyState from '@/components/custom/EmptyState';
 import { FeedSkeleton } from '@/components/custom/PostFeed';
 import { apiClient } from '@/lib/api';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 const PostDetail = () => {
   const { id = '' } = useParams<{ id: string }>();
@@ -17,6 +18,7 @@ const PostDetail = () => {
   const queryClient = useQueryClient();
 
   const postQuery = useQuery({ queryKey: ['post', id], queryFn: () => apiClient.getPost(id), enabled: !!id });
+  usePageTitle(postQuery.data ? `Post by ${postQuery.data.author.displayName}` : 'Post');
 
   const comments = useInfiniteQuery({
     queryKey: ['comments', id],

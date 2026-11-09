@@ -70,6 +70,32 @@ export const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(10),
 });
 
+export interface PostCursor {
+  createdAt: string;
+  id: string;
+}
+
+export const encodePostCursor = (cursor: PostCursor): string =>
+  Buffer.from(JSON.stringify([cursor.createdAt, cursor.id])).toString('base64url');
+
+const postCursor = z.string().transform((value, ctx): PostCursor => {
+  try {
+    const [createdAt, id] = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown[];
+    if (typeof createdAt === 'string' && !Number.isNaN(Date.parse(createdAt)) && objectId.safeParse(id).success) {
+      return { createdAt, id: id as string };
+    }
+  } catch {
+    // fall through to the validation issue below
+  }
+  ctx.addIssue({ code: 'custom', message: 'Invalid cursor' });
+  return z.NEVER;
+});
+
+export const postPageSchema = z.object({
+  cursor: postCursor.optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(10),
+});
+
 // Message validations
 export const startConversationSchema = z.object({
   handle: z.string().trim().toLowerCase().min(1, 'Choose someone to message'),

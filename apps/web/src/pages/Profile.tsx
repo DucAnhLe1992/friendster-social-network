@@ -17,6 +17,7 @@ import { useAuthStore } from '@/store/authStore';
 import { apiClient, mediaUrl, type ProfileTab } from '@/lib/api';
 import type { User } from '@/types';
 import { notifyError } from '@/lib/errors';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 type Tab = ProfileTab | 'replies';
 
@@ -40,6 +41,7 @@ const Profile = () => {
   const userQuery = useQuery({ queryKey: ['user', handle], queryFn: () => apiClient.getUser(handle), enabled: !!handle });
   const user = userQuery.data;
   const isMe = !!user && me?._id === user._id;
+  usePageTitle(user ? `${user.displayName} (@${user.handle})` : 'Profile');
 
   const updateFollow = ({ isFollowing, followerCount }: { isFollowing: boolean; followerCount: number }) =>
     queryClient.setQueryData<User>(['user', handle], (old) => (old ? { ...old, isFollowing, followerCount } : old));
@@ -96,7 +98,7 @@ const Profile = () => {
       <PageHeader title={user.displayName} subtitle={`${user.postCount ?? 0} posts`} back />
 
       <div className="relative h-36 sm:h-48 bg-gradient-to-br from-primary/50 via-accent/30 to-background overflow-hidden">
-        {cover && <img src={cover} alt="" className="w-full h-full object-cover animate-fade-in" />}
+        {cover && <img src={cover} alt={`${user.displayName}'s cover`} decoding="async" className="w-full h-full object-cover animate-fade-in" />}
       </div>
 
       <div className="px-4 sm:px-6">
@@ -182,7 +184,7 @@ const Profile = () => {
         <PostFeed
           key={tab}
           queryKey={['posts', 'user', handle, tab]}
-          fetchPage={(page) => apiClient.getUserPosts(handle, tab, page)}
+          fetchPage={(cursor) => apiClient.getUserPosts(handle, tab, cursor)}
           empty={(() => {
             const meta = TABS.find((t) => t.id === tab)!;
             const Icon = meta.icon;

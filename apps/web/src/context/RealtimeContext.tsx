@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -50,7 +50,8 @@ const NOTIFICATION_TEXT: Record<Notification['type'], string> = {
 };
 
 export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
-  const accessToken = useAuthStore((s) => s.tokens?.accessToken);
+  const signedIn = useAuthStore((s) => Boolean(s.tokens?.accessToken));
+  const sessionGeneration = useAuthStore((s) => s.generation);
   const myId = useAuthStore((s) => s.user?._id);
   const queryClient = useQueryClient();
   const [socket, setSocket] = useState<RealtimeSocket | null>(null);
@@ -59,13 +60,17 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
   const [liveBuffer] = useState(() => new LiveBuffer());
 
   useEffect(() => {
-    if (!accessToken) return;
+    if (!signedIn) return;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
     // Recovery belongs to this sign-in: it stops the moment the effect is torn down or the session changes, even
     // before React re-runs the effect, so it can never write into the next account's cache.
     const recovery = new AbortController();
-    const generation = useAuthStore.getState().generation;
+    const generation = sessionGeneration;
+    const sameSession = () => {
+      const s = useAuthStore.getState();
+      return s.generation === generation && Boolean(s.tokens?.accessToken);
+    };
     const unsubscribe = useAuthStore.subscribe((s) => {
       if (s.generation !== generation) recovery.abort();
     });
@@ -77,7 +82,11 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
       setSynced(false);
     };
 
-    const next: RealtimeSocket = io(SERVER_ORIGIN, { auth: { token: accessToken }, transports: ['websocket', 'polling'] });
+    // Token is read on every (re)connect so a silent refresh never tears down the socket.
+    const next: RealtimeSocket = io(SERVER_ORIGIN, {
+      auth: (cb) => cb({ token: useAuthStore.getState().tokens?.accessToken }),
+      transports: ['websocket', 'polling'],
+    });
 
     next.on('new_notification', (notification) => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
@@ -140,7 +149,7 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
         .getUnreadNotifications()
         .catch(() => undefined)
         .finally(() => {
-          if (useAuthStore.getState().tokens?.accessToken === accessToken) next.connect();
+          if (sameSession() && !recovery.signal.aborted) next.connect();
         });
     });
     return () => {
@@ -150,9 +159,10 @@ export const RealtimeProvider = ({ children }: { children: ReactNode }) => {
       next.disconnect();
       setSocket(null);
     };
-  }, [accessToken, myId, queryClient, liveBuffer]);
+  }, [signedIn, sessionGeneration, myId, queryClient, liveBuffer]);
 
-  return <RealtimeContext.Provider value={{ socket, synced, liveBuffer }}>{children}</RealtimeContext.Provider>;
+  const value = useMemo(() => ({ socket, synced, liveBuffer }), [socket, synced, liveBuffer]);
+  return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>;
 };
 
 // eslint-disable-next-line react-refresh/only-export-components

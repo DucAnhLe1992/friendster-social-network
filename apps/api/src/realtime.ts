@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import { db } from './database/db';
 import { conversationParticipantsTable as participants } from './database/schema';
 import { ServerToClientEvents, ClientToServerEvents, InterServerEvents, SocketData } from './types';
+import { logger } from './utils/logger';
 
 export type RealtimeServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
 
@@ -75,7 +76,7 @@ export const setupRealtime = (httpServer: HttpServer): RealtimeServer => {
           });
         }
       } catch (error) {
-        console.error('Typing relay failed:', error);
+        logger.warn({ err: error }, 'typing relay failed');
       }
     };
 

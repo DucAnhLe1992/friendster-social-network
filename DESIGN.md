@@ -6,7 +6,7 @@
 - Clean, spacious layouts with intentional whitespace
 - Subtle gradients and glassmorphism effects
 - Smooth micro-interactions and transitions
-- Dark mode first, light mode optional
+- Dark-only theme: one carefully tuned palette instead of two half-maintained ones
 - Modern typography with excellent readability
 
 ## Color Palette
@@ -25,14 +25,6 @@
 --bg-secondary: #1a1a2e;      /* Dark purple-blue */
 --bg-tertiary: #252542;       /* Lighter card bg */
 --bg-elevated: #2d2d5a;       /* Elevated surfaces */
-```
-
-### Background Colors (Light Mode)
-```css
---bg-primary-light: #ffffff;
---bg-secondary-light: #f8fafc;
---bg-tertiary-light: #f1f5f9;
---bg-elevated-light: #e2e8f0;
 ```
 
 ### Text Colors
@@ -346,20 +338,6 @@
 --avatar-lg: 56px;
 --avatar-xl: 80px;
 --avatar-2xl: 120px;
-```
-
-## Story Ring
-
-```css
-.story-ring {
-  background: var(--gradient-primary);
-  padding: 3px;
-  border-radius: var(--radius-full);
-}
-
-.story-ring-viewed {
-  background: var(--bg-tertiary);
-}
 ```
 
 ## Scrollbar
