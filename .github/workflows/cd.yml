@@ -20,7 +20,14 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       vars.DOCKER_PUBLISH == 'true'
-      && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      && (
+        github.event_name == 'workflow_dispatch'
+        || (
+          github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_branch == 'main'
+        )
+      )
     env:
       SHA: ${{ github.event.workflow_run.head_sha || inputs.sha }}
 
@@ -53,7 +60,6 @@ jobs:
           file: ./docker/Dockerfile.api
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/friendster-api:latest
             ${{ secrets.DOCKER_USERNAME }}/friendster-api:${{ env.SHA }}
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
@@ -65,11 +71,11 @@ jobs:
           file: ./docker/Dockerfile.web
           push: true
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/friendster-web:latest
             ${{ secrets.DOCKER_USERNAME }}/friendster-web:${{ env.SHA }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
+      # Images are tagged only with the commit SHA so every deploy is traceable and reversible.
       # Deploy to production server (optional - configure with your server details)
       # - name: Deploy to production
       #   uses: appleboy/ssh-action@master

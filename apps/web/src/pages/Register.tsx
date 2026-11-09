@@ -9,8 +9,10 @@ import { Label } from '@/components/ui/label';
 import { useAuthStore } from '@/store/authStore';
 import { apiClient } from '@/lib/api';
 import { notifyError } from '@/lib/errors';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 const Register = () => {
+  usePageTitle('Create account');
   const navigate = useNavigate();
   const { login } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);
@@ -128,7 +130,7 @@ const Register = () => {
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
-          <p className="text-xs text-muted-foreground">Must be at least 6 characters</p>
+          <p className="text-xs text-muted-foreground">Must be at least 12 characters</p>
         </div>
 
         <Button

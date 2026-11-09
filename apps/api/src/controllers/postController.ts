@@ -2,11 +2,11 @@ import { Request, Response } from 'express';
 import { and, count, desc, eq, gte, inArray, or, sql, SQL } from 'drizzle-orm';
 import { db } from '../database/db';
 import { followsTable, notificationsTable, postLikesTable, postsTable, usersTable } from '../database/schema';
-import { createPostSchema, updatePostSchema, paginationSchema, profileTabSchema } from '../utils/validation';
+import { createPostSchema, updatePostSchema, postPageSchema, profileTabSchema, encodePostCursor } from '../utils/validation';
 import { publicPostColumns } from '../utils/serializers';
 import { uploadedPath } from '../middleware/upload';
 import { claimForPost, enqueueFileDeletions, processFileDeletionJobs, recordUploads } from '../services/media';
-import { isDuplicateKey } from '../middleware/errorHandler';
+import { isDuplicateKey, isForeignKeyViolation } from '../middleware/errorHandler';
 import { notify } from '../services/notifications';
 import { IApiResponse, IAuthRequest } from '../types';
 
@@ -18,23 +18,30 @@ const findPost = async (id: string, viewerId?: string) => {
   return post ?? null;
 };
 
+// Keyset pagination on (created_at, id): new posts never shift later pages, and no count(*) per request.
 const listPosts = async (req: IAuthRequest, res: Response, where?: SQL): Promise<void> => {
-  const { page, limit } = paginationSchema.parse(req.query);
-  const offset = (page - 1) * limit;
+  const { cursor, limit } = postPageSchema.parse(req.query);
+  const after = cursor
+    ? sql`(${postsTable.createdAt}, ${postsTable.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id})`
+    : undefined;
 
-  const [posts, [{ total }]] = await Promise.all([
-    selectPosts(req.user?.id)
-      .where(where)
-      .orderBy(desc(postsTable.createdAt), desc(postsTable.id))
-      .limit(limit)
-      .offset(offset),
-    db.select({ total: count() }).from(postsTable).where(where),
-  ]);
+  const rows = await selectPosts(req.user?.id)
+    .where(and(where, after))
+    .orderBy(desc(postsTable.createdAt), desc(postsTable.id))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const posts = hasMore ? rows.slice(0, limit) : rows;
+  const last = posts.at(-1);
 
   const response: IApiResponse = {
     success: true,
     data: { posts },
-    meta: { page, limit, total, hasMore: offset + posts.length < total },
+    meta: {
+      limit,
+      hasMore,
+      nextCursor: hasMore && last ? encodePostCursor({ createdAt: last.createdAt.toISOString(), id: last._id }) : null,
+    },
   };
   res.status(200).json(response);
 };
@@ -205,11 +212,21 @@ export const likePost = async (req: IAuthRequest, res: Response): Promise<void> 
     return;
   }
 
-  const inserted = await db
-    .insert(postLikesTable)
-    .values({ postId, userId: me })
-    .onConflictDoNothing()
-    .returning({ postId: postLikesTable.postId });
+  let inserted: { postId: string }[];
+  try {
+    inserted = await db
+      .insert(postLikesTable)
+      .values({ postId, userId: me })
+      .onConflictDoNothing()
+      .returning({ postId: postLikesTable.postId });
+  } catch (error) {
+    // The post was deleted between the lookup and the insert.
+    if (isForeignKeyViolation(error)) {
+      res.status(404).json({ success: false, error: 'Post not found' });
+      return;
+    }
+    throw error;
+  }
   if (inserted.length > 0) await notify(req, { recipient: authorId, sender: me, type: 'like', post: postId });
 
   res.status(200).json({ success: true, data: { likeCount: await likeCountOf(postId), isLiked: true } });
@@ -224,17 +241,19 @@ export const unlikePost = async (req: IAuthRequest, res: Response): Promise<void
     return;
   }
 
-  await db.delete(postLikesTable).where(and(eq(postLikesTable.postId, postId), eq(postLikesTable.userId, me)));
-  await db
-    .delete(notificationsTable)
-    .where(
-      and(
-        eq(notificationsTable.recipientId, authorId),
-        eq(notificationsTable.senderId, me),
-        eq(notificationsTable.type, 'like'),
-        eq(notificationsTable.postId, postId)
-      )
-    );
+  await db.transaction(async (tx) => {
+    await tx.delete(postLikesTable).where(and(eq(postLikesTable.postId, postId), eq(postLikesTable.userId, me)));
+    await tx
+      .delete(notificationsTable)
+      .where(
+        and(
+          eq(notificationsTable.recipientId, authorId),
+          eq(notificationsTable.senderId, me),
+          eq(notificationsTable.type, 'like'),
+          eq(notificationsTable.postId, postId)
+        )
+      );
+  });
   res.status(200).json({ success: true, data: { likeCount: await likeCountOf(postId), isLiked: false } });
 };
 

@@ -163,4 +163,13 @@ describe('RealtimeProvider recovery', () => {
     expect(ids()).toEqual(['second-session']);
     unsubscribe();
   });
+
+  it('keeps the same socket when the access token is silently refreshed', async () => {
+    await mount();
+    await act(async () => sockets[0].fire('connect'));
+    const { generation, setTokensFor } = useAuthStore.getState();
+    await act(async () => setTokensFor(generation, tokens('rotated')));
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].connected).toBe(true);
+  });
 });

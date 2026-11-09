@@ -33,15 +33,21 @@ const FollowButton = ({ handle, userId, isFollowing: initial = false, onChange, 
   if (!me || me._id === userId) return null;
 
   const toggle = async () => {
+    const wasFollowing = following;
     setBusy(true);
+    setFollowing(!wasFollowing);
     try {
-      const res = following ? await apiClient.unfollowUser(handle) : await apiClient.followUser(handle);
+      const res = wasFollowing ? await apiClient.unfollowUser(handle) : await apiClient.followUser(handle);
       setFollowing(res.isFollowing);
-      setUser({ ...me, followingCount: Math.max(0, me.followingCount + (res.isFollowing ? 1 : -1)) });
+      const current = useAuthStore.getState().user;
+      if (current && res.isFollowing !== wasFollowing) {
+        setUser({ ...current, followingCount: Math.max(0, current.followingCount + (res.isFollowing ? 1 : -1)) });
+      }
       onChange?.(res);
       queryClient.invalidateQueries({ queryKey: ['feed'] });
       queryClient.invalidateQueries({ queryKey: ['suggestions'] });
     } catch (error) {
+      setFollowing(wasFollowing);
       notifyError(error, 'Could not update follow');
     } finally {
       setBusy(false);
@@ -52,6 +58,7 @@ const FollowButton = ({ handle, userId, isFollowing: initial = false, onChange, 
     <Button
       size={size}
       disabled={busy}
+      aria-pressed={following}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();

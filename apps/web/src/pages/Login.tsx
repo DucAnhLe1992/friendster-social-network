@@ -9,8 +9,10 @@ import { Label } from '@/components/ui/label';
 import { useAuthStore } from '@/store/authStore';
 import { apiClient } from '@/lib/api';
 import { notifyError } from '@/lib/errors';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 const Login = () => {
+  usePageTitle('Sign in');
   const navigate = useNavigate();
   const { login } = useAuthStore();
   const [isLoading, setIsLoading] = useState(false);

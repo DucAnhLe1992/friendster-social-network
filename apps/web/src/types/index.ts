@@ -89,6 +89,7 @@ export interface Meta {
   limit?: number;
   total?: number;
   hasMore?: boolean;
+  nextCursor?: string | null;
   unreadCount?: number;
 }
 

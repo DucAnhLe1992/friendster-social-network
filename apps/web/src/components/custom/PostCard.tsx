@@ -112,6 +112,8 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
 
   return (
     <>
+    {/* Whole card opens the post; inner links and buttons stop propagation. */}
+    {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
     <article
       onClick={openPost}
       tabIndex={detailed ? undefined : 0}
@@ -150,7 +152,7 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
             {isAuthor && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 -mr-2 -mt-1 text-muted-foreground">
+                  <Button variant="ghost" size="icon" aria-label="Post options" className="h-8 w-8 -mr-2 -mt-1 text-muted-foreground">
                     <MoreHorizontal className="w-4 h-4" />
                   </Button>
                 </DropdownMenuTrigger>
@@ -189,14 +191,16 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
                     e.stopPropagation();
                     setViewer(image);
                   }}
+                  aria-label="View image full size"
                   className={`relative overflow-hidden bg-secondary ${
                     images.length === 3 && index === 0 ? 'row-span-2' : ''
                   }`}
                 >
                   <img
                     src={mediaUrl(image)}
-                    alt=""
+                    alt={`Attachment ${index + 1} of ${images.length} from ${post.author.displayName}`}
                     loading="lazy"
+                    decoding="async"
                     className={`w-full h-full object-cover hover:scale-105 transition-transform duration-500 ${
                       images.length === 1 ? 'max-h-[28rem]' : 'aspect-square'
                     }`}
@@ -276,8 +280,14 @@ const PostCard = ({ post, onDeleted, detailed = false }: PostCardProps) => {
       />
       <Dialog open={viewer !== null} onOpenChange={(open) => !open && setViewer(null)}>
         <DialogContent className="max-w-4xl p-2 bg-background/95" onClick={(e) => e.stopPropagation()}>
-          <DialogTitle className="sr-only">Image</DialogTitle>
-          {viewer && <img src={mediaUrl(viewer)} alt="" className="w-full max-h-[85vh] object-contain rounded-lg" />}
+          <DialogTitle className="sr-only">Image from {post.author.displayName}</DialogTitle>
+          {viewer && (
+            <img
+              src={mediaUrl(viewer)}
+              alt={`Full-size attachment from ${post.author.displayName}`}
+              className="w-full max-h-[85vh] object-contain rounded-lg"
+            />
+          )}
         </DialogContent>
       </Dialog>
     </>

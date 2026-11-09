@@ -11,6 +11,7 @@ import { FeedSkeleton } from '@/components/custom/PostFeed';
 import { apiClient, getErrorMessage, mediaUrl } from '@/lib/api';
 import type { Notification, NotificationType } from '@/types';
 import { notifyError } from '@/lib/errors';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 const TYPE_META: Record<NotificationType, { icon: typeof Heart; color: string; text: string }> = {
   like: { icon: Heart, color: 'text-rose-500 bg-rose-500/10', text: 'liked your post' },
@@ -21,6 +22,7 @@ const TYPE_META: Record<NotificationType, { icon: typeof Heart; color: string; t
 };
 
 const Notifications = () => {
+  usePageTitle('Notifications');
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
@@ -98,9 +100,17 @@ const Notifications = () => {
             const preview = n.comment?.content ?? n.post?.content;
             const thumb = n.post?.images?.[0];
             return (
+              // Clickable row for mouse users; keyboard users get the same action via Enter.
+              // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
               <li
                 key={n._id}
+                /* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */
+                tabIndex={0}
+                aria-label={`${n.sender?.displayName ?? 'Someone'} ${meta.text}`}
                 onClick={() => open(n)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && e.target === e.currentTarget) open(n);
+                }}
                 className={`group relative flex gap-3 px-4 sm:px-6 py-4 border-b border-border cursor-pointer transition-colors hover:bg-secondary/40 ${
                   n.isRead ? '' : 'bg-primary/[0.06]'
                 }`}
@@ -118,7 +128,7 @@ const Notifications = () => {
                   </p>
                   {preview && <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{preview}</p>}
                 </div>
-                {thumb && <img src={mediaUrl(thumb)} alt="" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />}
+                {thumb && <img src={mediaUrl(thumb)} alt="" aria-hidden loading="lazy" decoding="async" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />}
                 <button
                   type="button"
                   onClick={(e) => {

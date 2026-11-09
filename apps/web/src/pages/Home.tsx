@@ -8,6 +8,7 @@ import CreatePost from '@/components/custom/CreatePost';
 import PostFeed from '@/components/custom/PostFeed';
 import EmptyState from '@/components/custom/EmptyState';
 import { apiClient } from '@/lib/api';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 type FeedTab = 'following' | 'everyone';
 
@@ -17,6 +18,7 @@ const TABS: { id: FeedTab; label: string }[] = [
 ];
 
 const Home = () => {
+  usePageTitle('Home');
   const [tab, setTab] = useState<FeedTab>('following');
 
   return (

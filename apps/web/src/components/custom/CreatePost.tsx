@@ -144,7 +144,7 @@ const CreatePost = ({ onSuccess, autoFocus }: { onSuccess?: () => void; autoFocu
               <div key={a.preview} className="relative group rounded-2xl overflow-hidden border border-border animate-scale-in">
                 <img
                   src={a.preview}
-                  alt=""
+                  alt={`Attachment ${index + 1} preview`}
                   className={`w-full object-cover ${attachments.length === 1 ? 'max-h-80' : 'aspect-square'}`}
                 />
                 <button

@@ -1,63 +1,71 @@
 import dotenv from 'dotenv';
+import { z } from 'zod';
 
 dotenv.config();
 
-const NODE_ENV = process.env.NODE_ENV || 'development';
+const LOCAL_DATABASE_URL = 'postgresql://friendster:friendster@localhost:5432/friendster';
 
-const isProduction = NODE_ENV === 'production';
+const schema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    PORT: z.coerce.number().int().min(1).max(65535).default(5000),
+    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).optional(),
 
-const secret = (name: string, devFallback: string): string => {
-  const value = process.env[name];
-  return value || devFallback;
-};
+    DATABASE_URL: z.string().url().optional(),
+    DATABASE_URL_DIRECT: z.string().url().optional(),
 
-const corsOrigins = (): string[] => {
-  const value = process.env.CORS_ORIGIN;
-  return (value || 'http://localhost:5173')
-    .split(',')
-    .map((origin) => origin.trim().replace(/\/$/, ''))
-    .filter(Boolean);
-};
+    JWT_ACCESS_SECRET: z.string().min(1).optional(),
+    JWT_REFRESH_SECRET: z.string().min(1).optional(),
+    JWT_ACCESS_EXPIRY: z.string().default('15m'),
+    JWT_REFRESH_EXPIRY: z.string().default('7d'),
 
-// Neon (or any PostgreSQL) connection string; locally falls back to the Postgres from docker-compose.dev.yml.
-const databaseUrl = (): string => {
-  const value = process.env.DATABASE_URL;
-  if (!value && isProduction) throw new Error('DATABASE_URL must be set in production');
-  return value || 'postgresql://friendster:friendster@localhost:5432/friendster';
-};
+    CORS_ORIGIN: z.string().optional(),
 
-const databaseUrlDirect = (): string => process.env.DATABASE_URL_DIRECT || databaseUrl();
+    RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(900_000),
+    RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(300),
+  })
+  .superRefine((value, ctx) => {
+    if (value.NODE_ENV !== 'production') return;
+    const fail = (path: string, message: string) => ctx.addIssue({ code: 'custom', path: [path], message });
+    if (!value.DATABASE_URL) fail('DATABASE_URL', 'must be set in production');
+    for (const name of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'] as const) {
+      if ((value[name]?.length ?? 0) < 32) fail(name, 'must be a random string of at least 32 characters in production');
+    }
+    if (value.JWT_ACCESS_SECRET && value.JWT_ACCESS_SECRET === value.JWT_REFRESH_SECRET) {
+      fail('JWT_REFRESH_SECRET', 'must differ from JWT_ACCESS_SECRET');
+    }
+    if (!value.CORS_ORIGIN) fail('CORS_ORIGIN', 'must be set in production');
+  });
+
+const parsed = schema.safeParse(process.env);
+if (!parsed.success) {
+  const details = parsed.error.issues.map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`).join('\n');
+  throw new Error(`Invalid environment configuration:\n${details}`);
+}
+const raw = parsed.data;
+
+const databaseUrl = raw.DATABASE_URL ?? LOCAL_DATABASE_URL;
 
 export const env = {
-  NODE_ENV,
-  PORT: parseInt(process.env.PORT || '5000', 10),
+  NODE_ENV: raw.NODE_ENV,
+  PORT: raw.PORT,
+  LOG_LEVEL: raw.LOG_LEVEL ?? (raw.NODE_ENV === 'test' ? 'silent' : raw.NODE_ENV === 'production' ? 'info' : 'debug'),
 
-  DATABASE_URL: databaseUrl(),
-  DATABASE_URL_DIRECT: databaseUrlDirect(),
+  DATABASE_URL: databaseUrl,
+  DATABASE_URL_DIRECT: raw.DATABASE_URL_DIRECT ?? databaseUrl,
 
-  JWT_ACCESS_SECRET: secret('JWT_ACCESS_SECRET', 'dev-access-secret-change-me'),
-  JWT_REFRESH_SECRET: secret('JWT_REFRESH_SECRET', 'dev-refresh-secret-change-me'),
-  JWT_ACCESS_EXPIRY: process.env.JWT_ACCESS_EXPIRY || '15m',
-  JWT_REFRESH_EXPIRY: process.env.JWT_REFRESH_EXPIRY || '7d',
+  JWT_ACCESS_SECRET: raw.JWT_ACCESS_SECRET ?? 'dev-access-secret-change-me',
+  JWT_REFRESH_SECRET: raw.JWT_REFRESH_SECRET ?? 'dev-refresh-secret-change-me',
+  JWT_ACCESS_EXPIRY: raw.JWT_ACCESS_EXPIRY,
+  JWT_REFRESH_EXPIRY: raw.JWT_REFRESH_EXPIRY,
 
-  CORS_ORIGIN: corsOrigins(),
+  CORS_ORIGIN: (raw.CORS_ORIGIN ?? 'http://localhost:5173')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean),
 
-  RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10),
-  RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '300', 10),
-};
-
-export const assertProductionConfig = (): void => {
-  if (!isProduction) return;
-  for (const name of ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'] as const) {
-    const value = process.env[name];
-    if (!value || value.length < 32) {
-      throw new Error(`${name} must be set to a random string of at least 32 characters in production`);
-    }
-  }
-  if (env.JWT_ACCESS_SECRET === env.JWT_REFRESH_SECRET) {
-    throw new Error('JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different');
-  }
-  if (!process.env.CORS_ORIGIN) throw new Error('CORS_ORIGIN must be set in production');
+  RATE_LIMIT_WINDOW_MS: raw.RATE_LIMIT_WINDOW_MS,
+  RATE_LIMIT_MAX_REQUESTS: raw.RATE_LIMIT_MAX_REQUESTS,
 };
 
 export default env;

@@ -9,8 +9,10 @@ import ConversationList from '@/components/messages/ConversationList';
 import ChatThread from '@/components/messages/ChatThread';
 import NewMessageDialog from '@/components/messages/NewMessageDialog';
 import { apiClient, getErrorMessage } from '@/lib/api';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 const Messages = () => {
+  usePageTitle('Messages');
   const { id } = useParams<{ id: string }>();
   const [composeOpen, setComposeOpen] = useState(false);
 

@@ -6,6 +6,7 @@ import { NotificationType } from '../types';
 import { authorColumns } from '../utils/serializers';
 import { RealtimeServer, userRoom } from '../realtime';
 
+
 interface NotifyInput {
   recipient: string;
   sender: string;
@@ -54,6 +55,6 @@ export const notify = async (req: Request, input: NotifyInput): Promise<void> =>
     const [notification] = await selectNotifications().where(eq(notificationsTable.id, created.id));
     if (notification) getIo(req).to(userRoom(input.recipient)).emit('new_notification', notification);
   } catch (error) {
-    console.error('Notification delivery failed:', error);
+    req.log.warn({ err: error }, 'notification delivery failed');
   }
 };

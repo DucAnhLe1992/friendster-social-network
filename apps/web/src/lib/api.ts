@@ -143,12 +143,12 @@ export const apiClient = {
   getMe: () => unwrap(api.get<ApiResponse<{ user: User }>>('/auth/me')).then((d) => d.user),
 
   // Posts
-  getFeed: (page: number) => unwrapPage<Post>(api.get('/posts/feed', { params: { page, limit: 10 } }), 'posts'),
-  getAllPosts: (page: number) => unwrapPage<Post>(api.get('/posts', { params: { page, limit: 10 } }), 'posts'),
-  searchPosts: (q: string, page: number) =>
-    unwrapPage<Post>(api.get('/posts/search', { params: { q, page, limit: 10 } }), 'posts'),
-  getUserPosts: (handle: string, tab: ProfileTab, page: number) =>
-    unwrapPage<Post>(api.get(`/posts/user/${encodeURIComponent(handle)}`, { params: { tab, page, limit: 10 } }), 'posts'),
+  getFeed: (cursor?: string) => unwrapPage<Post>(api.get('/posts/feed', { params: { cursor, limit: 10 } }), 'posts'),
+  getAllPosts: (cursor?: string) => unwrapPage<Post>(api.get('/posts', { params: { cursor, limit: 10 } }), 'posts'),
+  searchPosts: (q: string, cursor?: string) =>
+    unwrapPage<Post>(api.get('/posts/search', { params: { q, cursor, limit: 10 } }), 'posts'),
+  getUserPosts: (handle: string, tab: ProfileTab, cursor?: string) =>
+    unwrapPage<Post>(api.get(`/posts/user/${encodeURIComponent(handle)}`, { params: { tab, cursor, limit: 10 } }), 'posts'),
   getPost: (id: string) => unwrap(api.get<ApiResponse<{ post: Post }>>(`/posts/${id}`)).then((d) => d.post),
   getTrending: () => unwrap(api.get<ApiResponse<{ topics: TrendingTopic[] }>>('/posts/trending')).then((d) => d.topics),
   uploadPostImages: (files: File[]) => {

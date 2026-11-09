@@ -8,10 +8,12 @@ import PostFeed from '@/components/custom/PostFeed';
 import UserRow from '@/components/custom/UserRow';
 import EmptyState from '@/components/custom/EmptyState';
 import { apiClient } from '@/lib/api';
+import { usePageTitle } from '@/hooks/usePageTitle';
 
 type ResultTab = 'posts' | 'people';
 
 const Explore = () => {
+  usePageTitle('Explore');
   const [params, setParams] = useSearchParams();
   const q = (params.get('q') ?? '').trim();
   const [input, setInput] = useState(q);
@@ -121,7 +123,7 @@ const Explore = () => {
         <PostFeed
           key={q}
           queryKey={['posts', 'search', q]}
-          fetchPage={(page) => apiClient.searchPosts(q, page)}
+          fetchPage={(cursor) => apiClient.searchPosts(q, cursor)}
           empty={
             <EmptyState
               icon={<FileSearch className="w-7 h-7" />}

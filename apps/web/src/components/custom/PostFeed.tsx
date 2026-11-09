@@ -10,7 +10,7 @@ import type { Page, Post } from '@/types';
 
 interface PostFeedProps {
   queryKey: QueryKey;
-  fetchPage: (page: number) => Promise<Page<Post>>;
+  fetchPage: (cursor?: string) => Promise<Page<Post>>;
   empty: ReactNode;
   enabled?: boolean;
 }
@@ -36,8 +36,8 @@ const PostFeed = ({ queryKey, fetchPage, empty, enabled = true }: PostFeedProps)
   const { data, error, isLoading, isError, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
     queryKey,
     queryFn: ({ pageParam }) => fetchPage(pageParam),
-    initialPageParam: 1,
-    getNextPageParam: (last, _all, lastParam) => (last.meta.hasMore ? lastParam + 1 : undefined),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => (last.meta.hasMore && last.meta.nextCursor ? last.meta.nextCursor : undefined),
     enabled,
   });
 

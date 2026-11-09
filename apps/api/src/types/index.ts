@@ -33,8 +33,10 @@ export interface IApiResponse<T = unknown> {
     limit?: number;
     total?: number;
     hasMore?: boolean;
+    nextCursor?: string | null;
     unreadCount?: number;
   };
+  requestId?: string;
 }
 
 // Socket Types
