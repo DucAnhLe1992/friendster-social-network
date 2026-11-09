@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import { parseEnvironment } from '../src/config/env';
 import { db } from '../src/database/db';
 import { postsTable } from '../src/database/schema';
 import { app, auth, registerUser } from './helpers';
@@ -87,6 +88,38 @@ describe('platform behaviour', () => {
     await request(app).post('/api/posts').set(auth(alice)).send({ content: 'more #typescript' }).expect(201);
     const res = await request(app).get('/api/posts/trending').expect(200);
     expect(res.body.data.topics[0]).toEqual({ tag: '#typescript', count: 2 });
+  });
+});
+
+describe('environment configuration', () => {
+  it('treats blank optional values as unset outside production', () => {
+    const config = parseEnvironment({
+      NODE_ENV: 'test',
+      DATABASE_URL: '',
+      DATABASE_URL_DIRECT: '',
+      JWT_ACCESS_SECRET: '',
+      JWT_REFRESH_SECRET: '',
+      CORS_ORIGIN: '',
+      LOG_LEVEL: '',
+    });
+
+    expect(config.DATABASE_URL_DIRECT).toBe(config.DATABASE_URL);
+    expect(config.JWT_ACCESS_SECRET).toBe('dev-access-secret-change-me');
+    expect(config.JWT_REFRESH_SECRET).toBe('dev-refresh-secret-change-me');
+    expect(config.CORS_ORIGIN).toEqual(['http://localhost:5173']);
+    expect(config.LOG_LEVEL).toBe('silent');
+  });
+
+  it('continues to reject blank JWT secrets in production', () => {
+    expect(() =>
+      parseEnvironment({
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgresql://friendster:secret@localhost:5432/friendster',
+        CORS_ORIGIN: 'https://friendster.example',
+        JWT_ACCESS_SECRET: '',
+        JWT_REFRESH_SECRET: '',
+      })
+    ).toThrow('JWT_ACCESS_SECRET: must be a random string of at least 32 characters in production');
   });
 });
 

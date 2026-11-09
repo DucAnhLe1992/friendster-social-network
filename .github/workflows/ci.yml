@@ -108,6 +108,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate migration service environment
+        run: |
+          docker compose config --format json \
+            | jq -e '.services.migrate.environment | has("JWT_ACCESS_SECRET") and has("JWT_REFRESH_SECRET") and has("CORS_ORIGIN")' > /dev/null
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
